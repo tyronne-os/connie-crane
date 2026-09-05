@@ -3155,6 +3155,7 @@ async def ide_shell(req: ShellRequest):
         return {"stdout": "", "stderr": str(e), "rc": 1}
 
 # ── IDE Landing Page ──────────────────────────────────────────────────────────
+
 @app.get("/ide", response_class=HTMLResponse)
 async def serve_ide():
     return r"""<!DOCTYPE html>
@@ -3165,107 +3166,185 @@ async def serve_ide():
 <title>CRANE IDE</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap">
 <style>
-/* CodeMirror inline theme */
+/* ── CodeMirror ── */
 .CodeMirror{height:100%;font-family:'JetBrains Mono',monospace;font-size:13px;background:#070d18;color:#e2e8f0;line-height:1.6;}
 .CodeMirror-gutters{background:#0d1627;border-right:1px solid #1e3052;}
 .CodeMirror-linenumber{color:#334155;padding:0 8px;}
 .CodeMirror-cursor{border-left:2px solid #38bdf8;}
-.cm-keyword{color:#c084fc;} .cm-string{color:#86efac;} .cm-comment{color:#475569;font-style:italic;}
-.cm-number{color:#fb923c;} .cm-def{color:#38bdf8;} .cm-variable{color:#e2e8f0;}
-.cm-operator{color:#f472b6;} .cm-atom{color:#fb923c;} .cm-property{color:#7dd3fc;}
-.CodeMirror-selected{background:rgba(56,189,248,0.18)!important;}
+.cm-keyword{color:#c084fc;}.cm-string{color:#86efac;}.cm-comment{color:#475569;font-style:italic;}
+.cm-number{color:#fb923c;}.cm-def{color:#38bdf8;}.cm-variable{color:#e2e8f0;}
+.cm-operator{color:#f472b6;}.cm-atom{color:#fb923c;}.cm-property{color:#7dd3fc;}
+.CodeMirror-selected{background:rgba(56,189,248,.18)!important;}
 
-:root {
-  --bg: #070d18; --panel: #0d1627; --card: #111827; --border: #1e3052;
-  --blue: #38bdf8; --purple: #a855f7; --green: #10b981; --orange: #f59e0b;
-  --red: #ef4444; --text: #e2e8f0; --muted: #475569;
-  --nvidia: #76b900;
+/* ── TOKENS ── */
+:root{
+  --bg:#070d18;--panel:#0d1627;--card:#111827;--border:#1e3052;
+  --blue:#38bdf8;--purple:#a855f7;--green:#10b981;--orange:#f59e0b;
+  --red:#ef4444;--text:#e2e8f0;--muted:#475569;--nvidia:#76b900;
+  --gold:#f59e0b;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
 
 /* ── TOPBAR ── */
-#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 14px;flex-shrink:0;}
-.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#38bdf8,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;margin-right:6px;}
-.tb-badge{background:rgba(118,185,0,0.15);color:var(--nvidia);padding:2px 8px;border-radius:4px;font-size:10px;border:1px solid var(--nvidia);font-weight:600;letter-spacing:1px;}
-.tb-sep{width:1px;height:22px;background:var(--border);margin:0 4px;}
-#tbModelSel{background:var(--card);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:5px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;cursor:pointer;max-width:280px;}
-#tbModelSel:focus{border-color:var(--nvidia);}
-.tb-status{font-size:11px;display:flex;align-items:center;gap:5px;}
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 14px;flex-shrink:0;}
+.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#38bdf8,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;}
+.tb-sep{width:1px;height:22px;background:var(--border);margin:0 2px;}
+.tb-status{font-size:11px;display:flex;align-items:center;gap:4px;}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
 .dot.on{background:var(--green);box-shadow:0 0 6px var(--green);}
 .dot.warn{background:var(--orange);}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:.15s;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
 .tb-btn.active{border-color:var(--purple);color:var(--purple);}
-#tbGHBtn{border-color:rgba(255,255,255,.2);}
-#tbGHBtn.connected{border-color:var(--green);color:var(--green);}
-#tbGCPBtn.connected{border-color:var(--nvidia);color:var(--nvidia);}
-.tb-spacer{flex:1;}
+.tb-btn.connected{border-color:var(--green);color:var(--green);}
+.tb-btn.gcp-on{border-color:var(--nvidia);color:var(--nvidia);}
 #voiceBtn{background:linear-gradient(135deg,#7c3aed,#f59e0b);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;letter-spacing:1px;}
+.tb-spacer{flex:1;}
 
 /* ── LAYOUT ── */
 #main{display:flex;flex:1;overflow:hidden;}
 
-/* ── SIDEBAR ── */
-#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:.25s;}
-#sidebar.collapsed{width:0;}
+/* ── FILE SIDEBAR ── */
+#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
 #sideHead{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;}
 #sideHead select{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px;outline:none;}
 #fileTree{flex:1;overflow-y:auto;padding:4px 0;}
-.ft-item{padding:4px 10px 4px 14px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;color:var(--text);}
+.ft-item{padding:4px 10px 4px 14px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;}
 .ft-item:hover{background:rgba(56,189,248,.08);}
 .ft-item.active{background:rgba(56,189,248,.15);color:var(--blue);}
 .ft-dir{color:var(--orange);font-weight:600;}
-.ft-indent{display:inline-block;}
 
 /* ── EDITOR AREA ── */
 #editorArea{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
 #tabBar{height:34px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;overflow-x:auto;flex-shrink:0;}
 .ed-tab{padding:0 14px;height:34px;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;border-right:1px solid var(--border);white-space:nowrap;color:var(--muted);flex-shrink:0;}
 .ed-tab.active{background:var(--bg);color:var(--text);border-top:2px solid var(--blue);}
-.ed-tab .tab-close{opacity:.4;font-size:13px;line-height:1;}
-.ed-tab .tab-close:hover{opacity:1;color:var(--red);}
+.ed-tab .tclose{opacity:.4;font-size:14px;line-height:1;}
+.ed-tab .tclose:hover{opacity:1;color:var(--red);}
 #editorWrap{flex:1;overflow:hidden;position:relative;}
-#terminal{height:180px;background:#020a0f;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;}
+#terminal{height:180px;background:#020a0f;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;}
 #termHead{padding:4px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);display:flex;gap:10px;align-items:center;}
 #termOut{flex:1;overflow-y:auto;padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;}
 #termInputRow{display:flex;border-top:1px solid var(--border);flex-shrink:0;}
-#termCwd{padding:4px 8px;color:var(--green);font-family:'JetBrains Mono',monospace;font-size:11px;flex-shrink:0;}
+#termPrompt{padding:4px 8px;color:var(--green);font-family:'JetBrains Mono',monospace;font-size:11px;flex-shrink:0;}
 #termInput{flex:1;background:transparent;border:none;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;padding:4px 0;}
 
 /* ── AGENT PANEL ── */
-#agentPanel{width:340px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
-#agentHead{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;}
-#agentHead .ah-title{font-weight:700;font-size:13px;letter-spacing:.5px;}
-.model-tag{font-size:9px;background:rgba(118,185,0,.15);color:var(--nvidia);padding:1px 6px;border-radius:3px;border:1px solid var(--nvidia);margin-left:auto;font-family:'JetBrains Mono',monospace;}
+#agentPanel{width:380px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+#agentHead{padding:9px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.ah-title{font-weight:700;font-size:13px;letter-spacing:.5px;}
+.ah-model-chip{font-size:9px;background:rgba(118,185,0,.12);color:var(--nvidia);padding:2px 7px;border-radius:12px;border:1px solid rgba(118,185,0,.3);margin-left:auto;font-family:'JetBrains Mono',monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* ── CHAT LOG ── */
 #chatLog{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;}
-.msg{border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.6;max-width:100%;}
-.msg.user{background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);align-self:flex-end;color:var(--text);}
-.msg.agent{background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);align-self:flex-start;color:var(--text);}
-.msg.sys{background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);align-self:center;color:var(--green);font-size:11px;text-align:center;}
-.msg pre{background:rgba(0,0,0,.4);padding:6px 8px;border-radius:4px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:6px;}
-#chatComposer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:6px;flex-shrink:0;}
-#composerTools{display:flex;gap:5px;flex-wrap:wrap;}
-.ctx-btn{background:var(--card);border:1px solid var(--border);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;}
-.ctx-btn:hover{border-color:var(--purple);color:var(--purple);}
-.ctx-btn.active{border-color:var(--purple);color:var(--purple);background:rgba(168,85,247,.15);}
-#chatInput{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;outline:none;resize:none;width:100%;min-height:70px;max-height:160px;}
-#chatInput:focus{border-color:var(--blue);}
-#sendRow{display:flex;align-items:center;gap:6px;}
-#sendBtn{background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;border:none;padding:6px 16px;border-radius:5px;cursor:pointer;font-weight:600;font-size:12px;transition:.15s;}
-#sendBtn:hover{opacity:.9;}
-#sendBtn:disabled{opacity:.4;cursor:default;}
-.thinking{display:flex;gap:4px;align-items:center;padding:6px;}
+.msg{border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.6;}
+.msg.user{background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);align-self:flex-end;max-width:90%;}
+.msg.agent{background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.18);align-self:flex-start;max-width:100%;}
+.msg.sys{background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);align-self:center;color:var(--green);font-size:11px;text-align:center;max-width:100%;}
+.msg pre{background:rgba(0,0,0,.5);padding:8px 10px;border-radius:4px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:6px;white-space:pre-wrap;}
+.apply-btn{display:inline-block;margin-top:8px;background:rgba(16,185,129,.15);border:1px solid var(--green);color:var(--green);padding:4px 10px;border-radius:4px;font-size:10px;cursor:pointer;}
+.thinking{display:flex;gap:4px;align-items:center;padding:8px 12px;}
 .thinking span{width:6px;height:6px;border-radius:50%;background:var(--purple);animation:blink 1.2s infinite;}
-.thinking span:nth-child(2){animation-delay:.3s;}
-.thinking span:nth-child(3){animation-delay:.6s;}
+.thinking span:nth-child(2){animation-delay:.3s;}.thinking span:nth-child(3){animation-delay:.6s;}
 @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
 
+/* ══════════════════════════════════════════════
+   CLAUDE-STYLE COMPOSER
+   ══════════════════════════════════════════════ */
+#composer{border-top:1px solid var(--border);background:var(--panel);flex-shrink:0;display:flex;flex-direction:column;}
+
+/* Project + Mode bar */
+#composerTopBar{display:flex;align-items:center;gap:6px;padding:7px 10px 0;flex-wrap:wrap;}
+#projectPill{display:flex;align-items:center;gap:5px;background:var(--card);border:1px solid var(--border);border-radius:20px;padding:3px 10px 3px 7px;cursor:pointer;font-size:11px;transition:.15s;max-width:160px;}
+#projectPill:hover{border-color:var(--blue);}
+#projectPill .pp-icon{font-size:12px;}
+#projectPill .pp-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mode-group{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;flex-shrink:0;}
+.mode-btn{background:transparent;border:none;color:var(--muted);padding:4px 11px;cursor:pointer;font-size:11px;font-family:'Inter',sans-serif;transition:.15s;white-space:nowrap;}
+.mode-btn:hover{background:rgba(255,255,255,.05);color:var(--text);}
+.mode-btn.active{background:rgba(168,85,247,.2);color:var(--purple);font-weight:600;}
+.mode-btn.superman.active{background:linear-gradient(135deg,rgba(245,158,11,.2),rgba(239,68,68,.2));color:var(--gold);font-weight:700;}
+.mode-sep{width:1px;background:var(--border);flex-shrink:0;}
+#composerCtxPills{display:flex;gap:4px;flex-wrap:wrap;padding:4px 10px 0;min-height:0;}
+.ctx-pill{display:flex;align-items:center;gap:4px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);border-radius:12px;padding:2px 8px;font-size:10px;color:var(--blue);cursor:pointer;}
+.ctx-pill .cp-x{opacity:.5;font-size:12px;line-height:1;}
+.ctx-pill .cp-x:hover{opacity:1;}
+
+/* Textarea */
+#chatInput{background:transparent;border:none;color:var(--text);font-size:13px;font-family:'Inter',sans-serif;outline:none;resize:none;width:100%;min-height:64px;max-height:200px;padding:10px 12px;line-height:1.6;}
+#chatInput::placeholder{color:var(--muted);}
+
+/* Bottom toolbar */
+#composerToolbar{display:flex;align-items:center;gap:4px;padding:6px 8px;border-top:1px solid rgba(255,255,255,.04);}
+.tool-icon{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;font-size:16px;color:var(--muted);transition:.15s;border:1px solid transparent;flex-shrink:0;}
+.tool-icon:hover{background:rgba(255,255,255,.06);color:var(--text);border-color:var(--border);}
+.tool-icon.active{background:rgba(168,85,247,.15);color:var(--purple);border-color:rgba(168,85,247,.3);}
+.tool-icon.vault-icon.active{background:rgba(245,158,11,.15);color:var(--gold);border-color:rgba(245,158,11,.3);}
+.tool-sep{width:1px;height:20px;background:var(--border);margin:0 2px;flex-shrink:0;}
+
+/* Model dropdown — custom grouped */
+#modelDropWrapper{position:relative;flex:1;min-width:0;}
+#modelDisplay{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;transition:.15s;overflow:hidden;}
+#modelDisplay:hover{border-color:var(--blue);}
+#modelDisplay .md-tag{font-size:9px;padding:1px 6px;border-radius:3px;font-family:'Inter',sans-serif;font-weight:600;flex-shrink:0;}
+#modelDisplay .md-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+#modelDisplay .md-arrow{margin-left:auto;color:var(--muted);flex-shrink:0;}
+#modelMenu{position:absolute;bottom:calc(100% + 6px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;z-index:500;display:none;box-shadow:0 -8px 32px rgba(0,0,0,.5);max-height:420px;overflow-y:auto;}
+#modelMenu.open{display:block;}
+.mg-head{padding:6px 12px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);background:rgba(0,0,0,.3);border-bottom:1px solid var(--border);position:sticky;top:0;}
+.mg-head.coding{color:var(--blue);}
+.mg-head.diffusion{color:var(--purple);}
+.mg-head.voice{color:var(--green);}
+.mg-head.nvidia{color:var(--nvidia);}
+.model-opt{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;transition:.12s;}
+.model-opt:hover{background:rgba(255,255,255,.05);}
+.model-opt.selected{background:rgba(56,189,248,.1);color:var(--blue);}
+.model-opt .mo-size{font-size:9px;color:var(--muted);min-width:32px;}
+.model-opt .mo-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mo-tag{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;flex-shrink:0;}
+.tag-code{background:rgba(56,189,248,.15);color:var(--blue);}
+.tag-nvidia{background:rgba(118,185,0,.15);color:var(--nvidia);}
+.tag-diff{background:rgba(168,85,247,.15);color:var(--purple);}
+.tag-voice{background:rgba(16,185,129,.15);color:var(--green);}
+.tag-fast{background:rgba(245,158,11,.15);color:var(--gold);}
+.tag-large{background:rgba(239,68,68,.15);color:var(--red);}
+
+#sendBtn{background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;flex-shrink:0;transition:.15s;}
+#sendBtn:hover{opacity:.9;}
+#sendBtn:disabled{opacity:.35;cursor:default;}
+
+/* ── VAULT PANEL (slides up inside agent panel) ── */
+#vaultPanel{position:absolute;bottom:0;left:0;right:0;background:var(--panel);border-top:2px solid var(--gold);z-index:200;display:none;flex-direction:column;max-height:60%;box-shadow:0 -8px 32px rgba(0,0,0,.6);}
+#vaultPanel.open{display:flex;}
+#vaultHead{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.vault-title{font-weight:700;font-size:12px;color:var(--gold);letter-spacing:1px;}
+#vaultClose{margin-left:auto;background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:16px;}
+#vaultSearch{background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 9px;border-radius:4px;font-size:11px;outline:none;width:100%;}
+#vaultSearch:focus{border-color:var(--gold);}
+#vaultList{flex:1;overflow-y:auto;padding:4px 0;}
+.vault-item{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;transition:.12s;}
+.vault-item:hover{background:rgba(245,158,11,.08);}
+.vault-item .vi-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vault-item .vi-size{font-size:9px;color:var(--muted);}
+.vault-item .vi-add{opacity:0;font-size:11px;color:var(--gold);flex-shrink:0;}
+.vault-item:hover .vi-add{opacity:1;}
+.vault-item.added{background:rgba(245,158,11,.12);}
+#vaultFooter{padding:6px 12px;border-top:1px solid var(--border);display:flex;gap:6px;flex-shrink:0;}
+.vault-act{background:var(--card);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:10px;cursor:pointer;}
+.vault-act:hover{border-color:var(--gold);color:var(--gold);}
+
+/* ── TOOLS MENU ── */
+#toolsMenu{position:absolute;bottom:calc(100% + 8px);left:0;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px;z-index:400;display:none;min-width:200px;box-shadow:0 -6px 24px rgba(0,0,0,.5);}
+#toolsMenu.open{display:block;}
+.tm-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px;cursor:pointer;font-size:11px;transition:.12s;}
+.tm-item:hover{background:rgba(255,255,255,.06);}
+.tm-item .ti-icon{font-size:14px;width:20px;text-align:center;}
+.tm-item .ti-key{margin-left:auto;font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
+
 /* ── MODALS ── */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9000;display:flex;align-items:center;justify-content:center;}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9000;display:flex;align-items:center;justify-content:center;}
 .modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:24px;min-width:380px;max-width:500px;display:flex;flex-direction:column;gap:14px;}
 .modal h3{font-size:15px;font-weight:700;}
 .modal input,.modal select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;width:100%;}
@@ -3276,11 +3355,11 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .modal-label{font-size:11px;color:var(--muted);margin-bottom:2px;}
 .modal-hint{font-size:10px;color:var(--muted);line-height:1.5;}
 
-/* scrollbars */
-::-webkit-scrollbar{width:4px;height:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+/* Mode descriptions */
+#modeHint{font-size:10px;color:var(--muted);padding:2px 10px 0;min-height:14px;}
 
-/* GH panel */
-#ghPanel{padding:8px 10px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px;}
+::-webkit-scrollbar{width:4px;height:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
 .repo-row{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-family:'JetBrains Mono',monospace;}
 .repo-row:hover{background:rgba(56,189,248,.08);}
 .repo-priv{font-size:9px;background:rgba(168,85,247,.2);color:var(--purple);padding:0 4px;border-radius:3px;}
@@ -3292,27 +3371,20 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 <!-- TOP BAR -->
 <div id="topbar">
   <span class="logo-ide">CRANE&nbsp;IDE</span>
-  <span class="tb-badge">NVIDIA&nbsp;NIM</span>
   <div class="tb-sep"></div>
-  <select id="tbModelSel" title="Select NVIDIA NIM model">
-    <option value="">⟳ Loading models…</option>
-  </select>
-  <div class="tb-sep"></div>
-  <div class="tb-status" id="nvStatus"><div class="dot" id="nvDot"></div><span id="nvLabel">NIM</span></div>
+  <div class="tb-status"><div class="dot" id="nvDot"></div><span id="nvLabel" style="font-size:11px">NIM</span></div>
   <div class="tb-sep"></div>
   <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()">⎇ GitHub</button>
-  <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP GPU</button>
+  <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
   <div class="tb-spacer"></div>
-  <span style="font-size:10px;color:var(--muted);" id="activeModel"></span>
-  <div class="tb-sep"></div>
   <button class="tb-btn active" onclick="window.location='/'">🎙 Voice Foundry</button>
   <button id="voiceBtn" onclick="window.location='/'">BIG Q</button>
 </div>
 
-<!-- MAIN LAYOUT -->
+<!-- MAIN -->
 <div id="main">
 
-  <!-- SIDEBAR: file tree -->
+  <!-- SIDEBAR -->
   <div id="sidebar">
     <div id="sideHead">
       <span style="font-size:10px;color:var(--muted);flex-shrink:0">REPO</span>
@@ -3320,76 +3392,155 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
         <option value="">connect GitHub…</option>
       </select>
     </div>
-    <div id="fileTree"><div style="padding:12px 10px;font-size:11px;color:var(--muted);">Connect GitHub to browse files</div></div>
+    <div id="fileTree"><div style="padding:12px 10px;font-size:11px;color:var(--muted)">Connect GitHub to browse files</div></div>
   </div>
 
-  <!-- EDITOR + TERMINAL -->
+  <!-- EDITOR -->
   <div id="editorArea">
-    <div id="tabBar">
-      <div class="ed-tab active" id="welcomeTab">✦ welcome</div>
-    </div>
+    <div id="tabBar"><div class="ed-tab active" id="welcomeTab">✦ welcome</div></div>
     <div id="editorWrap"></div>
     <div id="terminal">
       <div id="termHead">
-        <span style="color:var(--green);font-weight:700;font-size:11px;">TERMINAL</span>
-        <span id="termCwdDisplay" style="color:var(--muted);font-size:10px;">/home/hunt</span>
+        <span style="color:var(--green);font-weight:700;font-size:11px">TERMINAL</span>
+        <span id="termCwdDisplay" style="color:var(--muted);font-size:10px">/home/hunt</span>
         <span style="flex:1"></span>
-        <button class="ctx-btn" onclick="clearTerm()">clear</button>
+        <button style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer" onclick="clearTerm()">clear</button>
       </div>
       <div id="termOut"></div>
       <div id="termInputRow">
-        <span id="termCwd">~/</span>
+        <span id="termPrompt">~/&nbsp;</span>
         <input id="termInput" placeholder="enter command…" onkeydown="termKey(event)">
       </div>
     </div>
   </div>
 
   <!-- AGENT PANEL -->
-  <div id="agentPanel">
+  <div id="agentPanel" style="position:relative;">
     <div id="agentHead">
       <span>⬡</span>
       <span class="ah-title">CONNIE&nbsp;CODE</span>
-      <span class="model-tag" id="agentModelTag">NVIDIA NIM</span>
+      <span class="ah-model-chip" id="agentModelChip">select model</span>
     </div>
     <div id="chatLog">
-      <div class="msg sys">CRANE IDE is online. Select a model above, connect GitHub, and start coding.</div>
+      <div class="msg sys">CRANE IDE is live. Select your model, open your repo, and let's build.</div>
     </div>
-    <div id="chatComposer">
-      <div id="composerTools">
-        <button class="ctx-btn" id="ctxCodeBtn" onclick="toggleCtx('code')" title="Include open file">&lt;/&gt; code</button>
-        <button class="ctx-btn" id="ctxTermBtn" onclick="toggleCtx('term')" title="Include terminal output">$ term</button>
-        <button class="ctx-btn" id="ctxGitBtn" onclick="toggleCtx('git')" title="Include git diff">⎇ diff</button>
-        <button class="ctx-btn" onclick="injectPrompt('Write tests for the selected code')">🧪 tests</button>
-        <button class="ctx-btn" onclick="injectPrompt('Explain this code step by step')">💡 explain</button>
-        <button class="ctx-btn" onclick="injectPrompt('Find and fix bugs in this code')">🐛 fix</button>
-        <button class="ctx-btn" onclick="injectPrompt('Refactor this code for clarity and performance')">♻ refactor</button>
-        <button class="ctx-btn" onclick="commitCurrentFile()">📤 commit</button>
+
+    <!-- ════ CLAUDE-STYLE COMPOSER ════ -->
+    <div id="composer">
+
+      <!-- Row 1: Project + Mode -->
+      <div id="composerTopBar">
+        <div id="projectPill" onclick="openGHModal()">
+          <span class="pp-icon">📁</span>
+          <span class="pp-name" id="ppName">No project</span>
+        </div>
+
+        <div class="mode-group">
+          <button class="mode-btn" id="modePlan" onclick="setMode('plan')">📋 Plan</button>
+          <div class="mode-sep"></div>
+          <button class="mode-btn active" id="modeAuto" onclick="setMode('auto')">⚙ Auto</button>
+          <div class="mode-sep"></div>
+          <button class="mode-btn superman" id="modeSuper" onclick="setMode('superman')">⚡ Superman</button>
+        </div>
       </div>
-      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Shift+Enter for newline, Enter to send)" onkeydown="chatKey(event)"></textarea>
-      <div id="sendRow">
+      <div id="modeHint">Auto: acts autonomously, pauses before destructive changes</div>
+
+      <!-- Context pills (added dynamically) -->
+      <div id="composerCtxPills"></div>
+
+      <!-- Textarea -->
+      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Enter sends, Shift+Enter newline)" onkeydown="chatKey(event)" oninput="updateTokenEst()"></textarea>
+
+      <!-- Bottom toolbar -->
+      <div id="composerToolbar">
+
+        <!-- Attach file -->
+        <div class="tool-icon" title="Attach file from vault" onclick="toggleVault()">📎</div>
+
+        <!-- Terminal ctx -->
+        <div class="tool-icon" id="toolTerm" title="Include terminal output" onclick="toggleToolCtx('term','toolTerm')">🖥️</div>
+
+        <!-- Vault -->
+        <div class="tool-icon vault-icon" id="toolVault" title="Open Nobility Vault" onclick="toggleVault()">🔐</div>
+
+        <!-- Code ctx -->
+        <div class="tool-icon" id="toolCode" title="Include open file" onclick="toggleToolCtx('code','toolCode')">&lt;/&gt;</div>
+
+        <!-- Git diff -->
+        <div class="tool-icon" id="toolGit" title="Include git diff" onclick="toggleToolCtx('git','toolGit')">⎇</div>
+
+        <!-- Tools menu -->
+        <div style="position:relative;">
+          <div class="tool-icon" id="toolMenuBtn" title="Tools" onclick="toggleToolsMenu()">🧰</div>
+          <div id="toolsMenu">
+            <div class="tm-item" onclick="runToolAction('write_file')"><span class="ti-icon">💾</span>Write file to repo<span class="ti-key">Ctrl+S</span></div>
+            <div class="tm-item" onclick="runToolAction('read_file')"><span class="ti-icon">📂</span>Read file from repo</div>
+            <div class="tm-item" onclick="runToolAction('run_tests')"><span class="ti-icon">🧪</span>Run tests</div>
+            <div class="tm-item" onclick="runToolAction('git_status')"><span class="ti-icon">⎇</span>Git status</div>
+            <div class="tm-item" onclick="runToolAction('git_diff')"><span class="ti-icon">📊</span>Git diff</div>
+            <div class="tm-item" onclick="runToolAction('git_log')"><span class="ti-icon">📜</span>Git log</div>
+            <div class="tm-item" onclick="runToolAction('install_deps')"><span class="ti-icon">📦</span>Install dependencies</div>
+            <div class="tm-item" onclick="runToolAction('start_server')"><span class="ti-icon">🚀</span>Start dev server</div>
+            <div class="tm-item" onclick="runToolAction('clear_chat')"><span class="ti-icon">🗑</span>Clear conversation</div>
+          </div>
+        </div>
+
+        <div class="tool-sep"></div>
+
+        <!-- Model selector -->
+        <div id="modelDropWrapper">
+          <div id="modelDisplay" onclick="toggleModelMenu()">
+            <span class="mo-tag tag-code md-tag">CODE</span>
+            <span class="md-name" id="mdName">select model…</span>
+            <span class="md-arrow">▾</span>
+          </div>
+          <div id="modelMenu">
+            <!-- populated by JS -->
+          </div>
+        </div>
+
+        <div class="tool-sep"></div>
+
+        <!-- Token est + send -->
+        <span style="font-size:10px;color:var(--muted);flex-shrink:0;" id="tokenEst"></span>
         <button id="sendBtn" onclick="sendChat()">Send ↑</button>
-        <span style="font-size:10px;color:var(--muted);flex:1;" id="tokenEstimate"></span>
-        <button class="ctx-btn" onclick="clearChat()">clear</button>
+      </div>
+    </div><!-- end composer -->
+
+    <!-- VAULT PANEL (slides up inside agent panel) -->
+    <div id="vaultPanel">
+      <div id="vaultHead">
+        <span>🔐</span>
+        <span class="vault-title">NOBILITY VAULT</span>
+        <input id="vaultSearch" placeholder="search voices…" oninput="filterVault()" style="max-width:140px;">
+        <button id="vaultClose" onclick="toggleVault()">×</button>
+      </div>
+      <div id="vaultList"></div>
+      <div id="vaultFooter">
+        <button class="vault-act" onclick="runCmd('ls -la /mnt/NOBILITY_VAULT/voice_vault/ 2>/dev/null || ls ~/voice_vault 2>/dev/null')">🔍 Browse vault dir</button>
+        <button class="vault-act" onclick="injectVaultPath()">📎 Add selected to context</button>
+        <button class="vault-act" onclick="window.location='/bigq'">🎙 Open BIG Q</button>
       </div>
     </div>
-  </div>
-</div>
+
+  </div><!-- end agentPanel -->
+</div><!-- end main -->
 
 <!-- GITHUB MODAL -->
 <div id="ghModal" class="modal-overlay" style="display:none">
   <div class="modal">
-    <h3>⎇ GitHub Connection</h3>
+    <h3>⎇ GitHub</h3>
     <div>
-      <div class="modal-label">Personal Access Token (stored server-side in env)</div>
+      <div class="modal-label">Personal Access Token</div>
       <input id="ghTokenInput" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
-      <div class="modal-hint">Needs repo + contents scopes. Token is saved to ~/.crane_gh (never sent to browser).</div>
+      <div class="modal-hint">Needs repo + contents scopes. Saved server-side only.</div>
     </div>
     <div class="modal-row">
-      <button class="modal-btn" onclick="saveGHToken()">Save Token</button>
+      <button class="modal-btn" onclick="saveGHToken()">Save & Connect</button>
       <button class="modal-btn sec" onclick="closeModal('ghModal')">Cancel</button>
     </div>
-    <div id="ghStatus" style="font-size:11px;color:var(--green);display:none;"></div>
-    <div id="ghRepoList" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;"></div>
+    <div id="ghStatus" style="font-size:11px;display:none;"></div>
+    <div id="ghRepoList" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;margin-top:4px;"></div>
   </div>
 </div>
 
@@ -3401,26 +3552,19 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <div class="modal-label">GCP Project ID</div>
       <input id="gcpProject" type="text" placeholder="my-gcp-project-123">
     </div>
-    <div class="modal-row" style="gap:8px">
-      <div style="flex:1">
-        <div class="modal-label">Region</div>
+    <div class="modal-row">
+      <div style="flex:1"><div class="modal-label">Region</div>
         <select id="gcpRegion" style="background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:5px;width:100%;outline:none;">
-          <option>us-central1</option><option>us-east4</option><option>us-west4</option>
-          <option>europe-west4</option><option>asia-northeast1</option>
+          <option>us-central1</option><option>us-east4</option><option>us-west4</option><option>europe-west4</option><option>asia-northeast1</option>
         </select>
       </div>
-      <div style="flex:1">
-        <div class="modal-label">Zone</div>
+      <div style="flex:1"><div class="modal-label">Zone</div>
         <select id="gcpZone" style="background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:5px;width:100%;outline:none;">
-          <option>us-central1-a</option><option>us-central1-b</option><option>us-central1-c</option>
-          <option>us-east4-a</option><option>europe-west4-a</option>
+          <option>us-central1-a</option><option>us-central1-b</option><option>us-east4-a</option><option>europe-west4-a</option>
         </select>
       </div>
     </div>
-    <div class="modal-hint">
-      Set GOOGLE_APPLICATION_CREDENTIALS env var to your service account JSON path before starting CRANE.<br>
-      GPU types available via NGC enterprise: A100 80GB, H100, L4, T4.
-    </div>
+    <div class="modal-hint">Set GOOGLE_APPLICATION_CREDENTIALS to your service account JSON path. NGC enterprise GPU types: A100 80GB · H100 · L4 · T4.</div>
     <div class="modal-row">
       <button class="modal-btn" onclick="saveGCP()">Save Config</button>
       <button class="modal-btn sec" onclick="closeModal('gcpModal')">Cancel</button>
@@ -3430,81 +3574,290 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 </div>
 
 <script>
+// ── MODEL CATALOG ──────────────────────────────────────────────────────────
+const MODEL_CATALOG = {
+  coding: [
+    {id:'microsoft/phi-3-mini-4k-instruct',    name:'Phi-3 Mini 4K',          size:'3.8B', tag:'fast'},
+    {id:'microsoft/phi-3-medium-128k-instruct',name:'Phi-3 Medium 128K',       size:'14B',  tag:'fast'},
+    {id:'nvidia/starcoder2-7b',                name:'StarCoder2 7B',           size:'7B',   tag:'code'},
+    {id:'nvidia/starcoder2-15b',               name:'StarCoder2 15B',          size:'15B',  tag:'code'},
+    {id:'ibm/granite-8b-code-instruct',        name:'Granite Code 8B',         size:'8B',   tag:'code'},
+    {id:'mistralai/codestral-22b-instruct-v0.1',name:'Codestral 22B',          size:'22B',  tag:'code'},
+    {id:'ibm/granite-34b-code-instruct',       name:'Granite Code 34B',        size:'34B',  tag:'code'},
+    {id:'google/gemma-2-27b-it',               name:'Gemma 2 27B',             size:'27B',  tag:'fast'},
+    {id:'qwen/qwen2.5-coder-32b-instruct',     name:'Qwen 2.5 Coder 32B',      size:'32B',  tag:'code'},
+    {id:'meta/llama-3.1-70b-instruct',         name:'Llama 3.1 70B',           size:'70B',  tag:'fast'},
+    {id:'meta/llama-3.3-70b-instruct',         name:'Llama 3.3 70B',           size:'70B',  tag:'nvidia'},
+    {id:'nvidia/llama-3.1-nemotron-70b-instruct',name:'Nemotron 70B',          size:'70B',  tag:'nvidia'},
+    {id:'mistralai/mistral-large',             name:'Mistral Large',           size:'123B', tag:'fast'},
+    {id:'deepseek-ai/deepseek-coder-v2-instruct',name:'DeepSeek Coder V2',     size:'236B', tag:'code'},
+    {id:'meta/llama-3.1-405b-instruct',        name:'Llama 3.1 405B',          size:'405B', tag:'large'},
+    {id:'nvidia/nemotron-4-340b-instruct',     name:'Nemotron 4 340B',         size:'340B', tag:'nvidia'},
+  ],
+  diffusion: [
+    {id:'stabilityai/stable-diffusion-xl-base-1.0', name:'SDXL Base 1.0',      size:'—', tag:'diff'},
+    {id:'stabilityai/stable-diffusion-3-medium',    name:'SD3 Medium',          size:'—', tag:'diff'},
+    {id:'black-forest-labs/flux-schnell',            name:'FLUX Schnell',        size:'—', tag:'diff'},
+    {id:'black-forest-labs/flux-dev',                name:'FLUX Dev',            size:'—', tag:'diff'},
+    {id:'nvidia/consistory',                         name:'Consistory (NIM)',    size:'—', tag:'nvidia'},
+  ],
+  voice: [
+    {id:'nvidia/parakeet-ctc-1.1b-asr',  name:'Parakeet CTC 1.1B ASR', size:'1.1B', tag:'voice'},
+    {id:'nvidia/parakeet-tdt-1.1b-asr',  name:'Parakeet TDT 1.1B ASR', size:'1.1B', tag:'voice'},
+    {id:'nvidia/canary-1b',              name:'Canary 1B ASR/TTS',     size:'1B',   tag:'voice'},
+    {id:'nvidia/fastpitch',              name:'FastPitch TTS',          size:'—',    tag:'voice'},
+    {id:'nvidia/radtts',                 name:'RADTTS TTS',             size:'—',    tag:'voice'},
+  ],
+};
+
+const TAG_LABELS = {code:'CODE',fast:'FAST',nvidia:'NVIDIA',large:'LARGE',diff:'DIFFUSION',voice:'VOICE'};
+
 // ── STATE ──────────────────────────────────────────────────────────────────
 let _editor = null;
-let _model = '';
-let _ctx = {code: false, term: false, git: false};
+let _model = 'deepseek-ai/deepseek-coder-v2-instruct';
+let _modelTag = 'code';
+let _mode = 'auto';
+let _ctx = {code:false, term:false, git:false};
+let _ctxItems = [];   // {type, label, data}
 let _messages = [];
-let _tabs = {};           // path → {content, sha, lang, editor}
+let _tabs = {};
 let _activeTab = 'welcome';
 let _termCwd = '/home/hunt';
-let _termHistory = [];
+let _termLog = '';
+let _vaultFiles = [];
+let _selectedVaultFiles = [];
 let _repoOwner = '';
 let _repoName = '';
-let _ghToken = '';
-let _termLog = '';
+let _modelMenuOpen = false;
 
-// ── EDITOR INIT ────────────────────────────────────────────────────────────
+// ── EDITOR ─────────────────────────────────────────────────────────────────
 function initEditor() {
   const wrap = document.getElementById('editorWrap');
-  wrap.style.flex = '1';
-  wrap.style.overflow = 'hidden';
   _editor = CodeMirror(wrap, {
-    value: `// Welcome to CRANE IDE\n// Powered by NVIDIA NIM — Select a model above to start coding\n// Connect GitHub (top bar) to open files\n\nconsole.log("Let's build something great.");`,
+    value: `// Welcome to CRANE IDE\n// Powered by NVIDIA NIM — your model, your rules\n\nconsole.log("CRANE is ready.");`,
     mode: 'javascript',
-    theme: 'crane',
     lineNumbers: true,
     tabSize: 2,
     indentWithTabs: false,
     lineWrapping: false,
-    autofocus: true,
-    extraKeys: {
-      'Ctrl-S': saveCurrentFile,
-      'Ctrl-Enter': () => sendChat(),
-    }
+    autofocus: false,
+    extraKeys: {'Ctrl-S': saveCurrentFile, 'Ctrl-Enter': ()=>sendChat()},
   });
   _editor.setSize('100%', '100%');
 }
 
-// ── MODEL LOADING ──────────────────────────────────────────────────────────
-async function loadModels() {
+// ── MODEL MENU ─────────────────────────────────────────────────────────────
+function buildModelMenu() {
+  const menu = document.getElementById('modelMenu');
+  menu.innerHTML = '';
+
+  const sections = [
+    {key:'coding',   label:'CODING MODELS — SMALL → LARGE', cls:'coding'},
+    {key:'diffusion',label:'DIFFUSION MODELS',               cls:'diffusion'},
+    {key:'voice',    label:'VOICE MODELS',                   cls:'voice'},
+  ];
+
+  sections.forEach(sec => {
+    const h = document.createElement('div');
+    h.className = `mg-head ${sec.cls}`;
+    h.textContent = sec.label;
+    menu.appendChild(h);
+    MODEL_CATALOG[sec.key].forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'model-opt' + (m.id === _model ? ' selected' : '');
+      row.dataset.id = m.id;
+      row.dataset.tag = m.tag;
+      const tagCls = `mo-tag tag-${m.tag}`;
+      row.innerHTML = `<span class="mo-size">${m.size}</span><span class="mo-name">${m.name}</span><span class="${tagCls}">${TAG_LABELS[m.tag]||m.tag.toUpperCase()}</span>`;
+      row.onclick = () => selectModel(m.id, m.tag, m.name);
+      menu.appendChild(row);
+    });
+  });
+}
+
+function toggleModelMenu() {
+  _modelMenuOpen = !_modelMenuOpen;
+  document.getElementById('modelMenu').classList.toggle('open', _modelMenuOpen);
+}
+
+function selectModel(id, tag, name) {
+  _model = id; _modelTag = tag;
+  document.getElementById('mdName').textContent = name;
+  document.getElementById('modelMenu').querySelectorAll('.model-opt').forEach(r => {
+    r.classList.toggle('selected', r.dataset.id === id);
+  });
+  const tagEl = document.querySelector('#modelDisplay .md-tag');
+  tagEl.className = `mo-tag tag-${tag} md-tag`;
+  tagEl.textContent = TAG_LABELS[tag] || tag.toUpperCase();
+  document.getElementById('agentModelChip').textContent = name.slice(0,24);
+  _modelMenuOpen = false;
+  document.getElementById('modelMenu').classList.remove('open');
+}
+
+// Close menu on outside click
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('modelDropWrapper');
+  if(wrap && !wrap.contains(e.target)) {
+    _modelMenuOpen = false;
+    document.getElementById('modelMenu').classList.remove('open');
+  }
+  const tm = document.getElementById('toolsMenu');
+  const tmb = document.getElementById('toolMenuBtn');
+  if(tm && !tm.contains(e.target) && e.target !== tmb) {
+    tm.classList.remove('open');
+  }
+});
+
+// Live NVIDIA fetch to merge into catalog
+async function fetchLiveModels() {
   try {
     const r = await fetch('/api/ide/nvidia/models');
     const d = await r.json();
-    const sel = document.getElementById('tbModelSel');
-    sel.innerHTML = '';
-    (d.models || []).forEach(m => {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = `[${m.tag}] ${m.label}`;
-      sel.appendChild(opt);
-    });
-    // Default to DeepSeek Coder
-    const coding = (d.models || []).find(m => m.tag === 'CODE');
-    if (coding) sel.value = coding.id;
-    _model = sel.value;
-    updateModelDisplay();
     const nvDot = document.getElementById('nvDot');
     const nvLabel = document.getElementById('nvLabel');
-    if (d.source === 'live') {
+    if(d.source === 'live') {
       nvDot.className = 'dot on'; nvLabel.textContent = 'NIM live';
     } else {
-      nvDot.className = 'dot warn'; nvLabel.textContent = 'NIM offline';
+      nvDot.className = 'dot warn'; nvLabel.textContent = 'NIM key?';
     }
+  } catch(e){}
+}
+
+// ── MODE ───────────────────────────────────────────────────────────────────
+const MODE_HINTS = {
+  plan:     '📋 Plan: thinks first, shows you the plan, waits for your go-ahead',
+  auto:     '⚙ Auto: acts autonomously, pauses before destructive changes',
+  superman: '⚡ Superman: fully autonomous — local model decides everything, no interruptions',
+};
+function setMode(m) {
+  _mode = m;
+  ['plan','auto','superman'].forEach(k => {
+    const btn = document.getElementById('mode'+k.charAt(0).toUpperCase()+k.slice(1));
+    btn.classList.toggle('active', k === m);
+  });
+  document.getElementById('modeHint').textContent = MODE_HINTS[m];
+}
+
+// ── CONTEXT TOOLS ──────────────────────────────────────────────────────────
+function toggleToolCtx(key, btnId) {
+  _ctx[key] = !_ctx[key];
+  document.getElementById(btnId).classList.toggle('active', _ctx[key]);
+  if(_ctx[key]) addCtxPill(key, key === 'code' ? '&lt;/&gt; file' : key === 'term' ? '$ terminal' : '⎇ diff');
+  else removeCtxPill(key);
+}
+
+function addCtxPill(type, label) {
+  removeCtxPill(type);
+  const bar = document.getElementById('composerCtxPills');
+  const p = document.createElement('div');
+  p.className = 'ctx-pill'; p.dataset.type = type;
+  p.innerHTML = `${label} <span class="cp-x" onclick="removeCtxPill('${type}')">×</span>`;
+  bar.appendChild(p);
+}
+
+function removeCtxPill(type) {
+  document.querySelectorAll(`#composerCtxPills [data-type="${type}"]`).forEach(el=>el.remove());
+  if(['code','term','git'].includes(type)) { _ctx[type]=false; document.getElementById('tool'+type.charAt(0).toUpperCase()+type.slice(1))?.classList.remove('active'); }
+  _ctxItems = _ctxItems.filter(i=>i.type!==type);
+}
+
+function addVaultCtxPill(fname) {
+  const type = 'vault_'+fname;
+  if(document.querySelector(`[data-type="${type}"]`)) return;
+  addCtxPill(type, '🔐 '+fname.slice(0,20));
+}
+
+// ── TOOLS MENU ACTIONS ─────────────────────────────────────────────────────
+function toggleToolsMenu() {
+  document.getElementById('toolsMenu').classList.toggle('open');
+}
+
+async function runToolAction(action) {
+  document.getElementById('toolsMenu').classList.remove('open');
+  const cmds = {
+    git_status: 'git status',
+    git_diff: 'git diff HEAD',
+    git_log: 'git log --oneline -10',
+    run_tests: 'python3 -m pytest -x -q 2>&1 | head -40',
+    install_deps: 'pip install -r requirements.txt 2>&1 | tail -10',
+    start_server: 'uvicorn app:app --host 127.0.0.1 --port 8000 --reload &',
+  };
+  if(cmds[action]) { runCmd(cmds[action]); return; }
+  if(action === 'write_file') saveCurrentFile();
+  if(action === 'read_file') { const p=prompt('File path in repo:'); if(p) openGHFile(p); }
+  if(action === 'clear_chat') clearChat();
+}
+
+// ── TOKEN ESTIMATE ─────────────────────────────────────────────────────────
+function updateTokenEst() {
+  const txt = document.getElementById('chatInput').value;
+  const est = Math.round(txt.length / 4);
+  document.getElementById('tokenEst').textContent = est > 0 ? `~${est} tok` : '';
+}
+
+// ── VAULT PANEL ────────────────────────────────────────────────────────────
+function toggleVault() {
+  const panel = document.getElementById('vaultPanel');
+  const toolVault = document.getElementById('toolVault');
+  const isOpen = panel.classList.toggle('open');
+  toolVault.classList.toggle('active', isOpen);
+  if(isOpen) loadVaultFiles();
+}
+
+async function loadVaultFiles() {
+  try {
+    const r = await fetch('/api/vault/files');
+    const d = await r.json();
+    _vaultFiles = d.files || [];
+    renderVault(_vaultFiles);
   } catch(e) {
-    console.error(e);
+    document.getElementById('vaultList').innerHTML = `<div style="padding:12px;color:var(--red);font-size:11px">Failed to load vault: ${e.message}</div>`;
   }
 }
 
-document.getElementById('tbModelSel').addEventListener('change', function() {
-  _model = this.value;
-  updateModelDisplay();
-});
+function renderVault(files) {
+  const list = document.getElementById('vaultList');
+  list.innerHTML = '';
+  if(!files.length) {
+    list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:11px">No voice files in vault</div>';
+    return;
+  }
+  files.forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'vault-item';
+    row.dataset.name = f.filename;
+    const ext = f.filename.split('.').pop().toUpperCase();
+    const extColor = {WAV:'var(--blue)',MP3:'var(--purple)',M4A:'var(--green)',OPUS:'var(--orange)'}[ext]||'var(--muted)';
+    row.innerHTML = `
+      <span style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;color:${extColor};flex-shrink:0">${ext}</span>
+      <span class="vi-name" title="${f.filename}">${f.filename}</span>
+      <span class="vi-size">${f.size}</span>
+      <span class="vi-add">+ add</span>`;
+    row.onclick = () => {
+      row.classList.toggle('added');
+      if(row.classList.contains('added')) {
+        _selectedVaultFiles.push(f.filename);
+        addCtxPill('vault_'+f.filename, '🔐 '+f.filename.slice(0,18));
+      } else {
+        _selectedVaultFiles = _selectedVaultFiles.filter(x=>x!==f.filename);
+        removeCtxPill('vault_'+f.filename);
+      }
+    };
+    list.appendChild(row);
+  });
+}
 
-function updateModelDisplay() {
-  const label = document.getElementById('tbModelSel').selectedOptions[0]?.textContent || _model;
-  document.getElementById('activeModel').textContent = label;
-  document.getElementById('agentModelTag').textContent = _model.split('/').pop()?.slice(0,20) || 'NIM';
+function filterVault() {
+  const q = document.getElementById('vaultSearch').value.toLowerCase();
+  renderVault(_vaultFiles.filter(f => f.filename.toLowerCase().includes(q)));
+}
+
+function injectVaultPath() {
+  if(!_selectedVaultFiles.length) return;
+  const paths = _selectedVaultFiles.map(f=>`/mnt/NOBILITY_VAULT/voice_vault/${f}`).join('\n');
+  const inp = document.getElementById('chatInput');
+  inp.value = (inp.value ? inp.value+'\n\n' : '') + 'Vault files:\n' + paths;
+  inp.focus();
 }
 
 // ── GITHUB ─────────────────────────────────────────────────────────────────
@@ -3512,8 +3865,7 @@ function openGHModal() { document.getElementById('ghModal').style.display='flex'
 function openGCPModal() {
   document.getElementById('gcpModal').style.display='flex';
   fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{
-    if(d.project_id) document.getElementById('gcpProject').value = d.project_id;
-    if(d.region) document.getElementById('gcpRegion').value = d.region;
+    if(d.project_id) document.getElementById('gcpProject').value=d.project_id;
   });
 }
 function closeModal(id) { document.getElementById(id).style.display='none'; }
@@ -3521,363 +3873,236 @@ function closeModal(id) { document.getElementById(id).style.display='none'; }
 async function saveGHToken() {
   const tok = document.getElementById('ghTokenInput').value.trim();
   if(!tok) return;
-  // Save to server via a temp env approach (write to ~/.crane_gh)
-  const r = await fetch('/api/ide/shell', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({cmd:`echo '${tok.replace(/'/g,"'\\''")}' > ~/.crane_gh && chmod 600 ~/.crane_gh`})});
+  const safe = tok.replace(/'/g,"'\\''");
+  const r = await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:`printf '%s' '${safe}' > ~/.crane_gh && chmod 600 ~/.crane_gh`})});
   const d = await r.json();
   const st = document.getElementById('ghStatus');
-  if(d.rc === 0) {
-    st.style.display='block'; st.textContent='✅ Token saved. Reload to activate.';
-    document.getElementById('tbGHBtn').classList.add('connected');
-    loadGHRepos();
-  } else {
-    st.style.display='block'; st.style.color='var(--red)'; st.textContent='❌ '+d.stderr;
-  }
+  st.style.display='block';
+  if(d.rc===0) { st.style.color='var(--green)'; st.textContent='✅ Token saved. Reload page for full effect.'; loadGHRepos(); }
+  else { st.style.color='var(--red)'; st.textContent='❌ '+d.stderr; }
 }
 
 async function loadGHRepos() {
   const r = await fetch('/api/ide/github/repos');
   const d = await r.json();
   if(d.error) {
-    document.getElementById('ghRepoList').innerHTML = `<div style="color:var(--red);font-size:11px;padding:6px">${d.error}</div>`;
+    document.getElementById('ghRepoList').innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px">${d.error}</div>`;
     return;
   }
   document.getElementById('tbGHBtn').classList.add('connected');
   const sel = document.getElementById('repoSel');
-  sel.innerHTML = '<option value="">— pick repo —</option>';
+  sel.innerHTML='<option value="">— pick repo —</option>';
   const list = document.getElementById('ghRepoList');
-  list.innerHTML = '';
-  (d.repos || []).forEach(repo => {
-    const opt = document.createElement('option');
-    opt.value = repo.full_name;
-    opt.textContent = repo.full_name;
-    sel.appendChild(opt);
-    const row = document.createElement('div');
-    row.className = 'repo-row';
-    const badge = repo.private
-      ? '<span class="repo-priv">priv</span>'
-      : '<span class="repo-pub">pub</span>';
-    row.innerHTML = badge + ' ' + repo.name + (repo.language?`<span style="margin-left:auto;font-size:9px;color:var(--muted)">${repo.language}</span>`:'');
-    row.onclick = () => { sel.value = repo.full_name; loadRepoTree(); closeModal('ghModal'); };
+  list.innerHTML='';
+  (d.repos||[]).forEach(repo=>{
+    const opt=document.createElement('option'); opt.value=repo.full_name; opt.textContent=repo.full_name; sel.appendChild(opt);
+    const row=document.createElement('div'); row.className='repo-row';
+    const badge=repo.private?'<span class="repo-priv">priv</span>':'<span class="repo-pub">pub</span>';
+    row.innerHTML=badge+' '+repo.name+(repo.language?`<span style="margin-left:auto;font-size:9px;color:var(--muted)">${repo.language}</span>`:'');
+    row.onclick=()=>{sel.value=repo.full_name;loadRepoTree();closeModal('ghModal');};
     list.appendChild(row);
   });
 }
 
 async function loadRepoTree() {
-  const full = document.getElementById('repoSel').value;
+  const full=document.getElementById('repoSel').value;
   if(!full) return;
-  const [owner, repo] = full.split('/');
-  _repoOwner = owner; _repoName = repo;
-  const tree = document.getElementById('fileTree');
-  tree.innerHTML = '<div style="padding:10px;color:var(--muted);font-size:11px">Loading…</div>';
-  const r = await fetch('/api/ide/github/tree', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({owner, repo, branch:'main'})});
-  const d = await r.json();
-  if(d.error) { tree.innerHTML = `<div style="color:var(--red);padding:10px;font-size:11px">${d.error}</div>`; return; }
-  renderTree(d.tree || []);
+  [_repoOwner,_repoName]=full.split('/');
+  document.getElementById('ppName').textContent=_repoName;
+  const tree=document.getElementById('fileTree');
+  tree.innerHTML='<div style="padding:10px;color:var(--muted);font-size:11px">Loading…</div>';
+  const r=await fetch('/api/ide/github/tree',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({owner:_repoOwner,repo:_repoName,branch:'main'})});
+  const d=await r.json();
+  if(d.error){tree.innerHTML=`<div style="color:var(--red);padding:10px;font-size:11px">${d.error}</div>`;return;}
+  renderTree(d.tree||[]);
 }
 
 function renderTree(items) {
-  const tree = document.getElementById('fileTree');
-  tree.innerHTML = '';
-  // Build directory structure
-  const dirs = {};
-  items.forEach(item => {
-    const parts = item.path.split('/');
-    const depth = parts.length - 1;
-    const div = document.createElement('div');
-    div.className = 'ft-item' + (item.type==='tree' ? ' ft-dir' : '');
-    div.style.paddingLeft = (14 + depth * 12) + 'px';
-    const icon = item.type === 'tree' ? '📁' : getFileIcon(item.path);
-    div.innerHTML = `${icon} ${parts[parts.length-1]}`;
-    if(item.type === 'blob') {
-      div.onclick = () => openGHFile(item.path);
-    }
+  const tree=document.getElementById('fileTree'); tree.innerHTML='';
+  items.forEach(item=>{
+    const parts=item.path.split('/'); const depth=parts.length-1;
+    const div=document.createElement('div');
+    div.className='ft-item'+(item.type==='tree'?' ft-dir':'');
+    div.style.paddingLeft=(14+depth*12)+'px';
+    div.innerHTML=getFileIcon(item.path)+' '+parts[parts.length-1];
+    if(item.type==='blob') div.onclick=()=>openGHFile(item.path);
     tree.appendChild(div);
   });
 }
 
-function getFileIcon(path) {
-  const ext = path.split('.').pop().toLowerCase();
-  const m = {py:'🐍',js:'⚡',ts:'💙',tsx:'⚛',jsx:'⚛',html:'🌐',css:'🎨',md:'📝',json:'{}',sh:'$',yaml:'📋',yml:'📋',txt:'📄',png:'🖼',jpg:'🖼',svg:'✦'};
-  return m[ext] || '📄';
+function getFileIcon(path){
+  const ext=path.split('.').pop().toLowerCase();
+  return {py:'🐍',js:'⚡',ts:'💙',tsx:'⚛',jsx:'⚛',html:'🌐',css:'🎨',md:'📝',json:'{}',sh:'$',yaml:'📋',yml:'📋',txt:'📄',png:'🖼',jpg:'🖼',svg:'✦'}[ext]||'📄';
 }
 
 async function openGHFile(path) {
   if(!_repoOwner) return;
-  const r = await fetch('/api/ide/github/file', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path, branch:'main'})});
-  const d = await r.json();
-  if(d.error) { appendMsg('sys','❌ '+d.error); return; }
-  // detect language
-  const ext = path.split('.').pop().toLowerCase();
-  const langMap = {py:'python',js:'javascript',ts:'javascript',jsx:'javascript',tsx:'javascript',
-    html:'htmlmixed',css:'css',json:'javascript',sh:'shell',md:'markdown',yaml:'yaml',yml:'yaml'};
-  const lang = langMap[ext] || 'text';
-  _editor.setValue(d.content || '');
-  _editor.setOption('mode', lang);
-  _tabs[path] = {content: d.content, sha: d.sha, path};
+  const r=await fetch('/api/ide/github/file',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({owner:_repoOwner,repo:_repoName,path,branch:'main'})});
+  const d=await r.json();
+  if(d.error){appendMsg('sys','❌ '+d.error);return;}
+  const ext=path.split('.').pop().toLowerCase();
+  const lang={py:'python',js:'javascript',ts:'javascript',jsx:'javascript',tsx:'javascript',html:'htmlmixed',css:'css',json:'javascript',sh:'shell',md:'markdown',yaml:'yaml',yml:'yaml'}[ext]||'text';
+  _editor.setValue(d.content||'');
+  _editor.setOption('mode',lang);
+  _tabs[path]={content:d.content,sha:d.sha,path};
   addTab(path);
-  // mark active in tree
-  document.querySelectorAll('.ft-item').forEach(el => {
-    el.classList.toggle('active', el.textContent.includes(path.split('/').pop()));
-  });
+  document.querySelectorAll('.ft-item').forEach(el=>el.classList.toggle('active',el.textContent.includes(path.split('/').pop())));
 }
 
 // ── TABS ───────────────────────────────────────────────────────────────────
-function addTab(path) {
-  const bar = document.getElementById('tabBar');
-  const fname = path.split('/').pop();
-  if(document.getElementById('tab_'+btoa(path))) {
-    setActiveTab(path); return;
-  }
-  const tab = document.createElement('div');
-  tab.className = 'ed-tab';
-  tab.id = 'tab_'+btoa(path);
-  tab.innerHTML = getFileIcon(path)+' '+fname+'<span class="tab-close" onclick="closeTab(\''+path+'\',event)">×</span>';
-  tab.onclick = () => setActiveTab(path);
-  bar.appendChild(tab);
-  setActiveTab(path);
+function addTab(path){
+  const bar=document.getElementById('tabBar'); const fname=path.split('/').pop();
+  const id='tab_'+btoa(path);
+  if(document.getElementById(id)){setActiveTab(path);return;}
+  const tab=document.createElement('div'); tab.className='ed-tab'; tab.id=id;
+  tab.innerHTML=getFileIcon(path)+' '+fname+`<span class="tclose" onclick="closeTab('${path}',event)">×</span>`;
+  tab.onclick=()=>setActiveTab(path); bar.appendChild(tab); setActiveTab(path);
 }
-
-function setActiveTab(path) {
-  _activeTab = path;
-  document.querySelectorAll('.ed-tab').forEach(t => t.classList.remove('active'));
-  const t = document.getElementById('tab_'+btoa(path));
-  if(t) t.classList.add('active');
-  if(_tabs[path]) {
-    _editor.setValue(_tabs[path].content || '');
-  }
+function setActiveTab(path){
+  _activeTab=path;
+  document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab_'+btoa(path))?.classList.add('active');
+  if(_tabs[path]) _editor.setValue(_tabs[path].content||'');
 }
-
-function closeTab(path, e) {
+function closeTab(path,e){
   e.stopPropagation();
-  const t = document.getElementById('tab_'+btoa(path));
-  if(t) t.remove();
-  delete _tabs[path];
-  _activeTab = 'welcome';
+  document.getElementById('tab_'+btoa(path))?.remove();
+  delete _tabs[path]; _activeTab='welcome';
 }
 
-// ── SAVE / COMMIT ──────────────────────────────────────────────────────────
-async function saveCurrentFile() {
-  if(!_activeTab || _activeTab==='welcome' || !_repoOwner) return;
-  const content = _editor.getValue();
-  const sha = _tabs[_activeTab]?.sha || '';
-  const msg = `CRANE IDE: update ${_activeTab.split('/').pop()}`;
-  const r = await fetch('/api/ide/github/write', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path:_activeTab, content, message:msg, sha, branch:'main'})});
-  const d = await r.json();
-  if(d.status === 'ok') {
-    appendMsg('sys','✅ Saved to GitHub: '+_activeTab);
-    if(_tabs[_activeTab]) { _tabs[_activeTab].sha = d.sha; _tabs[_activeTab].content = content; }
-  } else {
-    appendMsg('sys','❌ Save failed: '+(d.error||'unknown'));
-  }
-}
-
-async function commitCurrentFile() {
-  const content = _editor.getValue();
-  const msg = prompt('Commit message:', `CRANE IDE: update ${_activeTab.split('/').pop()}`);
-  if(!msg) return;
-  const sha = _tabs[_activeTab]?.sha || '';
-  const r = await fetch('/api/ide/github/write', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path:_activeTab, content, message:msg, sha, branch:'main'})});
-  const d = await r.json();
-  appendMsg('sys', d.status==='ok' ? '✅ Committed: '+msg : '❌ '+(d.error||''));
+// ── SAVE/COMMIT ─────────────────────────────────────────────────────────────
+async function saveCurrentFile(){
+  if(!_activeTab||_activeTab==='welcome'||!_repoOwner) return;
+  const content=_editor.getValue(); const sha=_tabs[_activeTab]?.sha||'';
+  const r=await fetch('/api/ide/github/write',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({owner:_repoOwner,repo:_repoName,path:_activeTab,content,message:`CRANE IDE: update ${_activeTab.split('/').pop()}`,sha,branch:'main'})});
+  const d=await r.json();
+  appendMsg('sys', d.status==='ok'?'✅ Saved to GitHub: '+_activeTab:'❌ '+(d.error||''));
+  if(d.status==='ok'&&_tabs[_activeTab]){_tabs[_activeTab].sha=d.sha;_tabs[_activeTab].content=content;}
 }
 
 // ── GCP ────────────────────────────────────────────────────────────────────
-async function saveGCP() {
-  const project = document.getElementById('gcpProject').value.trim();
-  const region = document.getElementById('gcpRegion').value;
-  const zone = document.getElementById('gcpZone').value;
+async function saveGCP(){
+  const project=document.getElementById('gcpProject').value.trim();
+  const region=document.getElementById('gcpRegion').value;
+  const zone=document.getElementById('gcpZone').value;
   if(!project) return;
-  const r = await fetch('/api/ide/gcp/configure', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({project_id:project, region, zone})});
-  const d = await r.json();
-  const msg = document.getElementById('gcpMsg');
-  msg.style.display='block';
-  if(d.status==='saved') {
-    msg.textContent = '✅ GCP configured: '+project+' ('+region+')';
-    document.getElementById('tbGCPBtn').classList.add('connected');
-    document.getElementById('tbGCPBtn').textContent = '☁ '+project;
-  } else {
-    msg.style.color='var(--red)'; msg.textContent = '❌ '+JSON.stringify(d);
-  }
+  const r=await fetch('/api/ide/gcp/configure',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({project_id:project,region,zone})});
+  const d=await r.json();
+  const msg=document.getElementById('gcpMsg'); msg.style.display='block';
+  if(d.status==='saved'){
+    msg.textContent='✅ GCP: '+project+' ('+region+')';
+    document.getElementById('tbGCPBtn').className='tb-btn gcp-on';
+    document.getElementById('tbGCPBtn').textContent='☁ '+project;
+  } else { msg.style.color='var(--red)'; msg.textContent='❌ '+JSON.stringify(d); }
 }
 
 // ── TERMINAL ───────────────────────────────────────────────────────────────
-async function runCmd(cmd) {
-  const out = document.getElementById('termOut');
-  const line = document.createElement('div');
-  line.style.cssText = 'color:var(--green);margin-bottom:2px;';
-  line.textContent = '$ ' + cmd;
-  out.appendChild(line);
-  _termLog += '$ '+cmd+'\n';
-  const r = await fetch('/api/ide/shell', {method:'POST',headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({cmd, cwd:_termCwd})});
-  const d = await r.json();
-  if(d.stdout) {
-    const o = document.createElement('pre');
-    o.style.cssText = 'color:var(--text);white-space:pre-wrap;margin-bottom:4px;';
-    o.textContent = d.stdout;
-    out.appendChild(o);
-    _termLog += d.stdout;
+async function runCmd(cmd){
+  const out=document.getElementById('termOut');
+  const ln=document.createElement('div'); ln.style.cssText='color:var(--green);margin-bottom:2px;'; ln.textContent='$ '+cmd; out.appendChild(ln);
+  _termLog+=`$ ${cmd}\n`;
+  const r=await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd,cwd:_termCwd})});
+  const d=await r.json();
+  if(d.stdout){ const o=document.createElement('pre'); o.style.cssText='color:var(--text);white-space:pre-wrap;margin-bottom:4px;'; o.textContent=d.stdout; out.appendChild(o); _termLog+=d.stdout; }
+  if(d.stderr){ const e=document.createElement('pre'); e.style.cssText='color:var(--red);white-space:pre-wrap;margin-bottom:4px;'; e.textContent=d.stderr; out.appendChild(e); _termLog+=d.stderr; }
+  if(cmd.trim().startsWith('cd ')){
+    const nd=cmd.trim().slice(3).trim();
+    const pw=await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'pwd',cwd:nd.startsWith('/')?nd:_termCwd+'/'+nd})});
+    const pd=await pw.json(); if(pd.stdout){_termCwd=pd.stdout.trim();document.getElementById('termCwdDisplay').textContent=_termCwd;}
   }
-  if(d.stderr) {
-    const e = document.createElement('pre');
-    e.style.cssText = 'color:var(--red);white-space:pre-wrap;margin-bottom:4px;';
-    e.textContent = d.stderr;
-    out.appendChild(e);
-    _termLog += d.stderr;
-  }
-  // update cwd if cd command
-  if(cmd.trim().startsWith('cd ')) {
-    const newDir = cmd.trim().slice(3).trim();
-    if(d.rc === 0) {
-      const pw = await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({cmd:'pwd',cwd:newDir.startsWith('/')?newDir:_termCwd+'/'+newDir})});
-      const pd = await pw.json();
-      if(pd.stdout) { _termCwd = pd.stdout.trim(); document.getElementById('termCwdDisplay').textContent = _termCwd; }
-    }
-  }
-  out.scrollTop = out.scrollHeight;
+  out.scrollTop=out.scrollHeight;
 }
+function termKey(e){ if(e.key==='Enter'){const inp=document.getElementById('termInput');const cmd=inp.value.trim();if(!cmd)return;inp.value='';runCmd(cmd);} }
+function clearTerm(){ document.getElementById('termOut').innerHTML=''; _termLog=''; }
 
-function termKey(e) {
-  if(e.key === 'Enter') {
-    const inp = document.getElementById('termInput');
-    const cmd = inp.value.trim();
-    if(!cmd) return;
-    _termHistory.push(cmd);
-    inp.value = '';
-    runCmd(cmd);
-  }
+// ── CHAT ───────────────────────────────────────────────────────────────────
+function chatKey(e){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();} }
+function injectPrompt(txt){ document.getElementById('chatInput').value=txt; document.getElementById('chatInput').focus(); }
+function appendMsg(role,text){
+  const log=document.getElementById('chatLog');
+  const div=document.createElement('div'); div.className='msg '+role;
+  const rendered=text.replace(/```([\w]*)\n?([\s\S]*?)```/g,(_,l,c)=>`<pre>${escHtml(c.trim())}</pre>`).replace(/\n/g,'<br>');
+  div.innerHTML=rendered; log.appendChild(div); log.scrollTop=log.scrollHeight;
 }
+function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function clearChat(){ document.getElementById('chatLog').innerHTML=''; _messages=[]; }
 
-function clearTerm() { document.getElementById('termOut').innerHTML=''; _termLog=''; }
+async function sendChat(){
+  if(!_model){ appendMsg('sys','⚠ Select a model first'); return; }
+  const inp=document.getElementById('chatInput');
+  const userText=inp.value.trim(); if(!userText) return;
+  inp.value=''; updateTokenEst();
 
-// ── CHAT / AGENT ───────────────────────────────────────────────────────────
-function toggleCtx(key) {
-  _ctx[key] = !_ctx[key];
-  document.getElementById('ctx'+key.charAt(0).toUpperCase()+key.slice(1)+'Btn').classList.toggle('active', _ctx[key]);
-}
+  let fullPrompt=userText;
+  if(_ctx.code&&_editor){ const sel=_editor.getSelection()||_editor.getValue().slice(0,8000); fullPrompt+='\n\n```\n'+sel+'\n```'; }
+  if(_ctx.term&&_termLog){ fullPrompt+='\n\nTerminal:\n```\n'+_termLog.slice(-3000)+'\n```'; }
+  if(_selectedVaultFiles.length){ fullPrompt+='\n\nVault files available:\n'+_selectedVaultFiles.map(f=>`/mnt/NOBILITY_VAULT/voice_vault/${f}`).join('\n'); }
 
-function injectPrompt(text) {
-  const inp = document.getElementById('chatInput');
-  inp.value = text;
-  inp.focus();
-}
+  // Plan mode: prepend instruction
+  if(_mode==='plan') fullPrompt='[PLAN MODE] Show me a step-by-step plan first. Do not execute anything. Outline what you will do and wait for my approval.\n\n'+fullPrompt;
+  if(_mode==='superman') fullPrompt='[SUPERMAN MODE] Execute fully autonomously. Do not ask for confirmation. Make all decisions yourself and report results when done.\n\n'+fullPrompt;
 
-function chatKey(e) {
-  if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
-}
+  appendMsg('user',userText);
+  _messages.push({role:'user',content:fullPrompt});
 
-function appendMsg(role, text) {
-  const log = document.getElementById('chatLog');
-  const div = document.createElement('div');
-  div.className = 'msg ' + role;
-  // render code blocks
-  const rendered = text.replace(/```([\s\S]*?)```/g, (_,c)=>`<pre>${escHtml(c)}</pre>`).replace(/\n/g,'<br>');
-  div.innerHTML = rendered;
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
-}
-
-function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function clearChat() { document.getElementById('chatLog').innerHTML=''; _messages=[]; }
-
-async function sendChat() {
-  if(!_model) { appendMsg('sys','⚠ Select a model first'); return; }
-  const inp = document.getElementById('chatInput');
-  const userText = inp.value.trim();
-  if(!userText) return;
-  inp.value = '';
-
-  // build context
-  let fullPrompt = userText;
-  if(_ctx.code && _editor) {
-    const sel = _editor.getSelection();
-    const code = sel || _editor.getValue().slice(0, 8000);
-    fullPrompt += '\n\n```\n' + code + '\n```';
-  }
-  if(_ctx.term && _termLog) {
-    fullPrompt += '\n\nTerminal output:\n```\n' + _termLog.slice(-3000) + '\n```';
-  }
-
-  appendMsg('user', userText);
-  _messages.push({role:'user', content: fullPrompt});
-
-  // thinking indicator
-  const thinking = document.createElement('div');
-  thinking.className = 'thinking';
-  thinking.innerHTML = '<span></span><span></span><span></span>';
-  document.getElementById('chatLog').appendChild(thinking);
-
-  const btn = document.getElementById('sendBtn');
-  btn.disabled = true;
+  const thinking=document.createElement('div'); thinking.className='msg agent thinking';
+  thinking.innerHTML='<span></span><span></span><span></span>'; document.getElementById('chatLog').appendChild(thinking);
+  const btn=document.getElementById('sendBtn'); btn.disabled=true;
 
   try {
-    const systemPrompt = `You are CONNIE CODE, an elite autonomous coding agent inside CRANE IDE. You have access to the user's codebase via GitHub and can execute shell commands. When writing code, format it in fenced code blocks. Be direct, precise, and build production-quality code. The user is building CRANE STUDIO — a FastAPI voice foundry and AI agent platform. When you generate code, offer to write it directly to the file. Repository: ${_repoOwner}/${_repoName || 'not connected'}.`;
-
-    const r = await fetch('/api/ide/chat', {method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model: _model,
-        messages: _messages.slice(-20), // keep last 20 for context window
-        system: systemPrompt,
-        max_tokens: 4096,
-        temperature: 0.2
-      })
-    });
-    const d = await r.json();
+    const sysParts=[
+      `You are CONNIE CODE, an elite autonomous coding agent inside CRANE IDE built on CRANE STUDIO.`,
+      `Current repo: ${_repoOwner||'none'}/${_repoName||'none'}. Mode: ${_mode.toUpperCase()}.`,
+      `You can write and read files via GitHub, execute shell commands, and work with voice files in the Nobility Vault.`,
+      `Format all code in fenced code blocks. Be direct and produce production-quality code.`,
+      _mode==='superman'?'Superman mode is active: execute all decisions autonomously without asking for permission.':
+      _mode==='plan'?'Plan mode: ONLY show the plan. Do not execute. Wait for the user to say "go" or "approved".':
+      'Auto mode: act autonomously but flag destructive operations before executing.',
+    ];
+    const r=await fetch('/api/ide/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:_model,messages:_messages.slice(-20),system:sysParts.join(' '),max_tokens:4096,temperature:_mode==='plan'?0.3:0.2})});
+    const d=await r.json();
     thinking.remove();
-    if(d.error) { appendMsg('sys','❌ '+d.error); btn.disabled=false; return; }
-    const reply = d.content;
-    _messages.push({role:'assistant', content: reply});
-    appendMsg('agent', reply);
-    // auto-extract and offer to insert code
-    const codeMatch = reply.match(/```(?:\w+)?\n([\s\S]+?)```/);
-    if(codeMatch && _editor) {
-      const applyBtn = document.createElement('button');
-      applyBtn.className = 'ctx-btn';
-      applyBtn.style.cssText = 'background:rgba(16,185,129,.15);border-color:var(--green);color:var(--green);margin-top:6px;';
-      applyBtn.textContent = '⬇ Apply code to editor';
-      applyBtn.onclick = () => { _editor.setValue(codeMatch[1]); applyBtn.remove(); };
-      document.getElementById('chatLog').lastChild.appendChild(applyBtn);
+    if(d.error){ appendMsg('sys','❌ '+d.error); btn.disabled=false; return; }
+    const reply=d.content;
+    _messages.push({role:'assistant',content:reply});
+    appendMsg('agent',reply);
+    // auto-extract code offer
+    const codeMatch=reply.match(/```(?:\w+)?\n?([\s\S]+?)```/);
+    if(codeMatch&&_editor){
+      const last=document.getElementById('chatLog').lastChild;
+      const ab=document.createElement('div'); ab.className='apply-btn';
+      ab.textContent='⬇ Apply to editor';
+      ab.onclick=()=>{ _editor.setValue(codeMatch[1]); ab.remove(); };
+      last.appendChild(ab);
     }
-  } catch(e) {
-    thinking.remove();
-    appendMsg('sys','❌ '+e.message);
-  }
-  btn.disabled = false;
-  document.getElementById('chatLog').scrollTop = 9999;
-}
-
-// ── GCP STATUS ─────────────────────────────────────────────────────────────
-async function checkGCPStatus() {
-  const r = await fetch('/api/ide/gcp/status');
-  const d = await r.json();
-  if(d.configured) {
-    document.getElementById('tbGCPBtn').classList.add('connected');
-    document.getElementById('tbGCPBtn').textContent = '☁ '+d.project_id;
-  }
+  } catch(e){ thinking.remove(); appendMsg('sys','❌ '+e.message); }
+  btn.disabled=false;
+  document.getElementById('chatLog').scrollTop=99999;
 }
 
 // ── INIT ───────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded',()=>{
   initEditor();
-  loadModels();
-  checkGCPStatus();
-  // auto-load GH repos silently
+  buildModelMenu();
+  fetchLiveModels();
+  // default model display
+  selectModel('deepseek-ai/deepseek-coder-v2-instruct','code','DeepSeek Coder V2');
+  // GCP status
+  fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{ if(d.configured){ document.getElementById('tbGCPBtn').className='tb-btn gcp-on'; document.getElementById('tbGCPBtn').textContent='☁ '+d.project_id; }});
+  // GH repos
   loadGHRepos().catch(()=>{});
-  // Run a quick status check in terminal
-  setTimeout(() => runCmd('echo "CRANE IDE ready — $(date)" && python3 --version && git --version'), 500);
+  // boot terminal
+  setTimeout(()=>runCmd('echo "CRANE IDE $(date)" && python3 --version'),500);
 });
 </script>
 </body>
 </html>
 """
-
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
