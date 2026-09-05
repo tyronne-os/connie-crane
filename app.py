@@ -5019,8 +5019,8 @@ VIDEO_ROSTER = [
         "id": "vid:minimax-h3",
         "name": "MiniMax-H3 FL2VA Pruned (Q4_K_M)",
         "hf_repo": "leejet/MiniMax-H3-GGUF",
-        "dest": "/mnt/NOBILITY_VAULT/models/minimax-h3",
-        "check_file": "/mnt/NOBILITY_VAULT/models/minimax-h3/minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+        "dest": "/mnt/h3storage/minimax-h3",
+        "check_file": "/mnt/h3storage/minimax-h3/minimax_h3_fl2va_pruned-Q4_K_M.gguf",
         "files": [
             "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
         ],
