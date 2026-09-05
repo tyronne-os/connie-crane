@@ -211,9 +211,16 @@ async def quincy_render(payload: dict):
 
         parts = []
 
+        # ── REPAIR: run before anything else shapes the signal ──────────────
+        if payload.get("declick"):
+            parts.append("adeclick")
+        if payload.get("declip"):
+            parts.append("adeclip")
+
         # Noise gate — cleans up bad mic noise floor
         if payload.get("gate"):
-            parts.append("agate=threshold=0.02:ratio=10:attack=5:release=200")
+            gt = float(payload.get("gate_thresh") or 0.02)
+            parts.append(f"agate=threshold={max(0.001,min(gt,0.3)):.4f}:ratio=10:attack=5:release=200")
 
         # Pitch shift (semitones) via resample + tempo compensation
         pitch = float(payload.get("pitch") or 0)
@@ -252,19 +259,68 @@ async def quincy_render(payload: dict):
         else:
             parts.append("highpass=f=80")
 
-        # De-esser — notch at 7 kHz
-        if payload.get("deess"):
-            parts.append("equalizer=f=7000:t=q:w=1:g=-4")
+        # ── ANATOMY: the physical instrument ────────────────────────────────
+        # Each band maps to a real resonance in the vocal tract.
+        for key, freq, width in (("nasal", 1000, 1.2), ("throat", 500, 1.2),
+                                 ("mouth", 2500, 1.6), ("proximity", 100, 1.0),
+                                 ("consonant", 5500, 2.0)):
+            g = float(payload.get(key) or 0)
+            if abs(g) > 0.05:
+                parts.append(f"equalizer=f={freq}:t=q:w={width}:g={g:.1f}")
 
-        # Tape warmth — gentle low-pass softening + harmonic coloration via acrusher
+        # ── CHARACTER: grit, movement, sparkle ──────────────────────────────
+        rasp = float(payload.get("rasp") or 0)
+        if rasp > 2:
+            # Bit-crush at high resolution reads as vocal fry / grit, not distortion.
+            bits = max(6.0, 16.0 - (rasp / 100.0) * 8.0)
+            parts.append(f"acrusher=bits={bits:.1f}:mode=log:aa=1")
+
+        vib_d = float(payload.get("vibrato") or 0)
+        if vib_d > 1:
+            vib_r = float(payload.get("vibrato_rate") or 5)
+            parts.append(f"vibrato=f={max(0.1,min(vib_r,12)):.2f}:d={min(vib_d/100.0,0.9):.3f}")
+
+        exciter = float(payload.get("exciter") or 0)
+        if exciter > 1:
+            parts.append(f"aexciter=level_in=1:level_out=1:amount={min(exciter/10.0,4):.2f}:blend=0")
+
+        crystal = float(payload.get("crystal") or 0)
+        if abs(crystal) > 0.05:
+            parts.append(f"crystalizer=i={max(-6,min(crystal,6)):.2f}:c=1")
+
+        sub = float(payload.get("subboost") or 0)
+        if sub > 2:
+            parts.append(f"asubboost=dry=1:wet={min(sub/100.0,1):.2f}:boost={1+sub/50.0:.2f}")
+
+        # ── De-esser at a chosen frequency ──────────────────────────────────
+        if payload.get("deess"):
+            sf = float(payload.get("sib_freq") or 7000)
+            sa = float(payload.get("sib_amount") or 4)
+            parts.append(f"equalizer=f={int(sf)}:t=q:w=1:g={-abs(sa):.1f}")
+
+        # Tape warmth — gentle low-pass softening
         tape = float(payload.get("tape") or 0)
         if tape > 20:
             cutoff = int(16000 - tape * 60)  # 16kHz→10kHz as tape goes 0→100
             parts.append(f"lowpass=f={max(cutoff,8000)}")
 
-        # Glue compression
+        # ── Pace: speaking rate without changing pitch ──────────────────────
+        pace = float(payload.get("pace") or 1.0)
+        if abs(pace - 1.0) > 0.01:
+            p = max(0.5, min(pace, 2.0))
+            parts.append(f"atempo={p:.3f}")
+
+        # Glue compression with real timing control
         if payload.get("compress"):
-            parts.append("acompressor=threshold=-18dB:ratio=3:attack=10:release=100:makeup=2dB")
+            atk = int(payload.get("attack") or 10)
+            rel = int(payload.get("release") or 100)
+            ratio = float(payload.get("ratio") or 3)
+            parts.append(f"acompressor=threshold=-18dB:ratio={max(1.1,min(ratio,20)):.1f}"
+                         f":attack={max(1,min(atk,200))}:release={max(10,min(rel,2000))}:makeup=2dB")
+
+        # Speech levelling — holds a narrator steady across a long read
+        if payload.get("speechnorm"):
+            parts.append("speechnorm=e=12.5:r=0.0001:l=1")
 
         # Room reverb
         room = ROOM_ECHO.get(payload.get("room") or "none")
@@ -537,6 +593,108 @@ async def bigq_chat(payload: dict):
 async def bigq_render(payload: dict):
     """Render the Big Q graph — same DSP core as the Quincy panel."""
     return await quincy_render(payload)
+
+
+# ═══════════════════ BRAIN — role profiles for voice agents ════════════════
+
+# Each role carries both a voice shape (DSP) and a persona shape (brain).
+# The DSP half is what the ear hears; the persona half is what the model becomes.
+BRAIN_ROLES = {
+    "narrator": {
+        "label": "Audiobook Narrator",
+        "note": "Even, tireless, articulate. Built to hold a listener for nine hours.",
+        "voice": {"pace": 0.96, "presence": 3, "consonant": 3, "mouth": 1.5,
+                  "speechnorm": True, "compress": True, "attack": 15, "release": 140,
+                  "ratio": 3.5, "room": "intimate", "breath": 12, "deess": True,
+                  "sib_freq": 7000, "sib_amount": 4},
+        "brain": {"rate": "measured", "emotion": "controlled", "warmth": 55,
+                  "formality": "neutral", "energy": 45, "pause": "dramatic",
+                  "stamina": "high", "character_range": "wide", "breath_audible": 20},
+    },
+    "companion": {
+        "label": "Intimate Companion",
+        "note": "Close, warm, present. Sounds like they are in the room with you.",
+        "voice": {"pace": 0.94, "proximity": 4, "throat": 2, "breath": 35, "air": 3,
+                  "chest": 2, "room": "intimate", "tape": 25, "compress": True,
+                  "attack": 20, "release": 180, "ratio": 2.2, "deess": True,
+                  "sib_freq": 7200, "sib_amount": 3},
+        "brain": {"rate": "unhurried", "emotion": "responsive", "warmth": 90,
+                  "formality": "casual", "energy": 40, "pause": "natural",
+                  "stamina": "medium", "character_range": "single", "breath_audible": 55},
+    },
+    "partner": {
+        "label": "Founder's Partner",
+        "note": "Sharp and affectionate at once — keeps up with you, pushes back.",
+        "voice": {"pace": 1.03, "presence": 3, "consonant": 2, "crystal": 1.5,
+                  "chest": 1.5, "air": 2, "room": "intimate", "compress": True,
+                  "attack": 8, "release": 90, "ratio": 3, "deess": True,
+                  "sib_freq": 7000, "sib_amount": 3.5},
+        "brain": {"rate": "brisk", "emotion": "expressive", "warmth": 78,
+                  "formality": "casual", "energy": 70, "pause": "natural",
+                  "stamina": "high", "character_range": "single", "breath_audible": 30},
+    },
+    "concierge": {
+        "label": "Executive Concierge",
+        "note": "Polished, precise, discreet. Competence you can hear.",
+        "voice": {"pace": 0.98, "presence": 2.5, "consonant": 4, "mouth": 2,
+                  "air": 2, "room": "intimate", "compress": True,
+                  "attack": 12, "release": 110, "ratio": 3, "speechnorm": True,
+                  "deess": True, "sib_freq": 6800, "sib_amount": 4.5},
+        "brain": {"rate": "measured", "emotion": "controlled", "warmth": 62,
+                  "formality": "formal", "energy": 55, "pause": "natural",
+                  "stamina": "high", "character_range": "single", "breath_audible": 15},
+    },
+    "bright": {
+        "label": "Bright / High-Energy",
+        "note": "Lifted, forward, playful. Formant up, presence forward, air open.",
+        "voice": {"pitch": 2.5, "formant": 2, "pace": 1.06, "presence": 4,
+                  "air": 5, "mouth": 3, "chest": -2, "crystal": 2, "exciter": 12,
+                  "room": "medium", "compress": True, "attack": 6, "release": 70,
+                  "ratio": 4, "deess": True, "sib_freq": 7500, "sib_amount": 5},
+        "brain": {"rate": "brisk", "emotion": "very expressive", "warmth": 85,
+                  "formality": "casual", "energy": 95, "pause": "brisk",
+                  "stamina": "medium", "character_range": "single", "breath_audible": 35},
+    },
+    "podcast": {
+        "label": "Podcast Host",
+        "note": "Conversational broadcast. Present and easy, never shouty.",
+        "voice": {"pace": 1.0, "presence": 3.5, "chest": 2, "consonant": 2,
+                  "proximity": 2, "room": "intimate", "compress": True,
+                  "attack": 10, "release": 100, "ratio": 4, "speechnorm": True,
+                  "deess": True, "sib_freq": 7000, "sib_amount": 4},
+        "brain": {"rate": "conversational", "emotion": "expressive", "warmth": 72,
+                  "formality": "casual", "energy": 68, "pause": "natural",
+                  "stamina": "high", "character_range": "narrow", "breath_audible": 35},
+    },
+    "character": {
+        "label": "Character Actor",
+        "note": "Maximum range. Built to be pushed hard in either direction.",
+        "voice": {"pace": 1.0, "presence": 2, "rasp": 15, "vibrato": 8,
+                  "vibrato_rate": 5, "chest": 3, "room": "medium",
+                  "compress": True, "attack": 15, "release": 120, "ratio": 2.5},
+        "brain": {"rate": "variable", "emotion": "very expressive", "warmth": 60,
+                  "formality": "variable", "energy": 75, "pause": "dramatic",
+                  "stamina": "medium", "character_range": "very wide", "breath_audible": 45},
+    },
+    "documentary": {
+        "label": "Documentary Voice",
+        "note": "Authoritative and unhurried. Weight without theatre.",
+        "voice": {"pitch": -1, "pace": 0.92, "chest": 4, "throat": 2,
+                  "presence": 2, "air": -1, "tape": 30, "room": "medium",
+                  "compress": True, "attack": 20, "release": 200, "ratio": 3,
+                  "speechnorm": True, "deess": True, "sib_freq": 6800, "sib_amount": 4},
+        "brain": {"rate": "measured", "emotion": "controlled", "warmth": 50,
+                  "formality": "formal", "energy": 40, "pause": "dramatic",
+                  "stamina": "high", "character_range": "single", "breath_audible": 12},
+    },
+}
+
+
+@app.get("/api/brain/roles")
+async def brain_roles():
+    return {"roles": [{"id": k, "label": v["label"], "note": v["note"],
+                       "voice": v["voice"], "brain": v["brain"]}
+                      for k, v in BRAIN_ROLES.items()]}
 
 
 # ═══════════════════ THE LABEL — finished voice agent gallery ═══════════════
@@ -2049,7 +2207,7 @@ async def serve_ui():
             { id:'vault',  x: 40,  y: 40,  w:220, title:'NOBILITY VAULT',  color:'#38bdf8', icon:'▤' },
             { id:'preset', x: 40,  y:250,  w:220, title:'PRESET',          color:'#f59e0b', icon:'◆' },
             { id:'eq',     x:310,  y: 40,  w:250, title:'EQ / SCULPT',     color:'#34d399', icon:'≋' },
-            { id:'brain',  x:310,  y:300,  w:250, title:'BRAIN PLAYGROUND',color:'#a855f7', icon:'◉' },
+            { id:'brain',  x:310,  y:430,  w:250, title:'BRAIN PLAYGROUND',color:'#a855f7', icon:'◉' },
             { id:'master', x:610,  y: 60,  w:230, title:'MASTER OUT',      color:'#ec4899', icon:'▶' },
         ];
 
@@ -2062,6 +2220,7 @@ async def serve_ui():
             bqBuildNodes();
             bqBuildOrb();
             bqLoadKeys();
+            if (!BQ_ROLES.length) bqLoadRoles();
             if (!document.getElementById('bqChatLog').children.length) {
                 bqPush('agent', 'Big Q online. Load a voice from the vault node, then tell me what you want — "warmer and closer", "fix this tinny laptop mic", "make her breathy like Marilyn".');
             }
@@ -2126,46 +2285,216 @@ async def serve_ui():
             bqFillEq(); bqBuildOrb();
         }
 
-        const BQ_EQ_PARAMS = [
+        // [key, label, unit, min, max, step]
+        const BQ_EQ_GROUPS = [
+          ['CORE', [
             ['pitch','Pitch','st',-6,6,0.5], ['formant','Formant','st',-4,4,0.5],
             ['breath','Breath','%',0,100,1],  ['chest','Chest','dB',-6,10,0.5],
             ['presence','Presence','dB',-6,8,0.5], ['air','Air','dB',-6,8,0.5],
             ['tape','Tape','%',0,100,1],
+          ]],
+          ['ANATOMY', [
+            ['proximity','Proximity','dB',-6,10,0.5],
+            ['throat','Throat','dB',-8,8,0.5],
+            ['nasal','Nasality','dB',-8,8,0.5],
+            ['mouth','Mouth','dB',-8,8,0.5],
+            ['consonant','Consonants','dB',-6,8,0.5],
+          ]],
+          ['CHARACTER', [
+            ['rasp','Rasp / Fry','%',0,100,1],
+            ['vibrato','Vibrato Depth','%',0,60,1],
+            ['vibrato_rate','Vibrato Rate','Hz',0.5,10,0.1],
+            ['exciter','Exciter','',0,40,1],
+            ['crystal','Crystalizer','',-4,6,0.25],
+            ['subboost','Sub Boost','%',0,100,1],
+          ]],
+          ['CONTROL', [
+            ['pace','Pace','x',0.6,1.6,0.01],
+            ['sib_freq','Sibilance Freq','Hz',5000,10000,100],
+            ['sib_amount','De-ess Amount','dB',0,12,0.5],
+            ['attack','Comp Attack','ms',1,120,1],
+            ['release','Comp Release','ms',20,800,10],
+            ['ratio','Comp Ratio',':1',1,12,0.5],
+          ]],
         ];
+
+        const BQ_EQ_PARAMS = BQ_EQ_GROUPS.flatMap(g => g[1]);
+        BQ_EQ_PARAMS.forEach(([k,,,lo]) => {
+            if (BQ.params[k] === undefined) {
+                BQ.params[k] = (k === 'pace') ? 1.0
+                             : (k === 'vibrato_rate') ? 5
+                             : (k === 'sib_freq') ? 7000
+                             : (k === 'sib_amount') ? 4
+                             : (k === 'attack') ? 10
+                             : (k === 'release') ? 100
+                             : (k === 'ratio') ? 3 : 0;
+            }
+        });
+
+        let BQ_EQ_OPEN = { CORE:true, ANATOMY:false, CHARACTER:false, CONTROL:false };
+
+        function bqToggleGroup(g) { BQ_EQ_OPEN[g] = !BQ_EQ_OPEN[g]; bqFillEq(); }
 
         function bqFillEq() {
             const b = document.getElementById('bqbody_eq');
-            b.innerHTML = BQ_EQ_PARAMS.map(([k,lbl,u,lo,hi,st]) => `
-              <div style="margin-bottom:7px;">
-                <div style="display:flex;justify-content:space-between;font-size:.57rem;color:#8a7ba8;margin-bottom:2px;">
-                  <span>${lbl}</span><span id="bqv_${k}" style="color:#34d399;font-family:monospace;">${BQ.params[k]}${u}</span>
+            if (!b) return;
+            b.style.maxHeight = '340px';
+            b.style.overflowY = 'auto';
+            b.innerHTML = BQ_EQ_GROUPS.map(([g, rows]) => `
+              <div style="margin-bottom:6px;">
+                <div onclick="bqToggleGroup('${g}')"
+                     style="cursor:pointer;display:flex;justify-content:space-between;
+                            font-family:monospace;font-size:.55rem;letter-spacing:1.5px;
+                            color:#34d399;padding:4px 0;border-bottom:1px solid #1e3a30;">
+                  <span>${g}</span><span>${BQ_EQ_OPEN[g]?'▾':'▸'}</span>
                 </div>
-                <input type="range" id="bqe_${k}" min="${lo}" max="${hi}" step="${st}" value="${BQ.params[k]}"
-                       oninput="BQ.params['${k}']=parseFloat(this.value);document.getElementById('bqv_${k}').textContent=this.value+'${u}';bqSyncOrb();"
-                       style="width:100%;height:3px;accent-color:#34d399;">
+                <div style="display:${BQ_EQ_OPEN[g]?'block':'none'};padding-top:6px;">
+                ${rows.map(([k,lbl,u,lo,hi,st]) => `
+                  <div style="margin-bottom:6px;">
+                    <div style="display:flex;justify-content:space-between;font-size:.56rem;color:#8a7ba8;">
+                      <span>${lbl}</span>
+                      <span id="bqv_${k}" style="color:#34d399;font-family:monospace;">${BQ.params[k]}${u}</span>
+                    </div>
+                    <input type="range" id="bqe_${k}" min="${lo}" max="${hi}" step="${st}" value="${BQ.params[k]}"
+                           oninput="BQ.params['${k}']=parseFloat(this.value);document.getElementById('bqv_${k}').textContent=this.value+'${u}';bqSyncOrb();"
+                           style="width:100%;height:3px;accent-color:#34d399;">
+                  </div>`).join('')}
+                </div>
               </div>`).join('') + `
-              <select onchange="BQ.params.room=this.value" style="width:100%;margin-top:5px;font-size:.65rem;">
-                ${['none','intimate','medium','large','cathedral'].map(r=>`<option value="${r}" ${r===BQ.params.room?'selected':''}>${r}</option>`).join('')}
-              </select>`;
+              <div style="border-top:1px solid #1e3a30;padding-top:7px;margin-top:4px;">
+                <div style="font-size:.56rem;color:#8a7ba8;margin-bottom:3px;">Room</div>
+                <select onchange="BQ.params.room=this.value" style="width:100%;font-size:.63rem;margin-bottom:7px;">
+                  ${['none','intimate','medium','large','cathedral'].map(r=>`<option value="${r}" ${r===BQ.params.room?'selected':''}>${r}</option>`).join('')}
+                </select>
+                <div style="display:flex;flex-wrap:wrap;gap:7px;font-size:.57rem;color:#a99cc4;">
+                  ${[['gate','Gate'],['deess','De-ess'],['compress','Glue'],
+                     ['speechnorm','Speech Lvl'],['declick','Declick'],
+                     ['declip','Declip'],['norm','Normalize']]
+                    .map(([k,lbl])=>`<label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+                      <input type="checkbox" ${BQ.params[k]?'checked':''}
+                             onchange="BQ.params['${k}']=this.checked;">${lbl}</label>`).join('')}
+                </div>
+              </div>`;
+        }
+
+        let BQ_ROLES = [];
+        let BQ_BRAIN_OPEN = { ROLE:true, VOICE:false, MANNER:false, WORLD:false };
+        function bqToggleBrain(g){ BQ_BRAIN_OPEN[g]=!BQ_BRAIN_OPEN[g]; bqFillBrain(); }
+
+        // [key, label, min, max, step]
+        const BQ_BRAIN_DIALS = [
+            ['warmth','Warmth',0,100,1],
+            ['energy','Energy',0,100,1],
+            ['expressive','Emotional Range',0,100,1],
+            ['breath_audible','Audible Breathing',0,100,1],
+            ['patience','Patience',0,100,1],
+            ['wit','Wit / Edge',0,100,1],
+        ];
+
+        const BQ_BRAIN_SELECTS = [
+            ['rate','Speaking Rate',['unhurried','measured','conversational','brisk','variable']],
+            ['pause','Pause Style',['brisk','natural','dramatic']],
+            ['formality','Formality',['intimate','casual','neutral','formal']],
+            ['emotion','Emotional Control',['controlled','responsive','expressive','very expressive']],
+            ['stamina','Stamina',['low','medium','high']],
+            ['character_range','Character Range',['single','narrow','wide','very wide']],
+            ['vernacular','Vernacular',['nola','harlem','atl','deep south','broadcast','academic','neutral']],
+            ['personality','Personality',['warm','sharp','playful','maternal','seductive','professional','streetwise','deadpan']],
+        ];
+
+        function bqBrainDefaults() {
+            const d = { warmth:70, energy:55, expressive:55, breath_audible:25,
+                        patience:60, wit:50, rate:'conversational', pause:'natural',
+                        formality:'casual', emotion:'responsive', stamina:'medium',
+                        character_range:'single', vernacular:'nola', personality:'warm',
+                        world:'', background:'', role:'' };
+            Object.entries(d).forEach(([k,v]) => { if (BQ.brain[k]===undefined) BQ.brain[k]=v; });
+        }
+
+        async function bqLoadRoles() {
+            try {
+                const r = await fetch('/api/brain/roles');
+                BQ_ROLES = (await r.json()).roles || [];
+            } catch(e) { BQ_ROLES = []; }
+            bqFillBrain();
+        }
+
+        function bqApplyRole(id) {
+            const role = BQ_ROLES.find(r => r.id === id);
+            BQ.brain.role = id;
+            if (!role) { bqFillBrain(); return; }
+            Object.entries(role.voice || {}).forEach(([k,v]) => BQ.params[k] = v);
+            Object.entries(role.brain || {}).forEach(([k,v]) => BQ.brain[k] = v);
+            bqPush('agent', `Role set: ${role.label}. ${role.note} Voice and manner both moved.`);
+            bqFillEq(); bqFillBrain(); bqBuildOrb();
         }
 
         function bqFillBrain() {
             const b = document.getElementById('bqbody_brain');
+            if (!b) return;
+            bqBrainDefaults();
+            b.style.maxHeight = '340px';
+            b.style.overflowY = 'auto';
+            const hdr = (g,label) => `
+              <div onclick="bqToggleBrain('${g}')"
+                   style="cursor:pointer;display:flex;justify-content:space-between;
+                          font-family:monospace;font-size:.55rem;letter-spacing:1.5px;
+                          color:#a855f7;padding:4px 0;border-bottom:1px solid #2f2145;">
+                <span>${label}</span><span>${BQ_BRAIN_OPEN[g]?'▾':'▸'}</span>
+              </div>`;
+
             b.innerHTML = `
-              <div style="font-size:.57rem;color:#8a7ba8;margin-bottom:3px;">Personality</div>
-              <select onchange="BQ.brain.personality=this.value" style="width:100%;margin-bottom:7px;font-size:.65rem;">
-                ${['warm','sharp','playful','maternal','seductive','professional','streetwise']
-                  .map(p=>`<option value="${p}" ${p===BQ.brain.personality?'selected':''}>${p}</option>`).join('')}
-              </select>
-              <div style="font-size:.57rem;color:#8a7ba8;margin-bottom:3px;">Vernacular</div>
-              <select onchange="BQ.brain.vernacular=this.value" style="width:100%;margin-bottom:7px;font-size:.65rem;">
-                ${['nola','harlem','atl','deep south','broadcast','academic']
-                  .map(p=>`<option value="${p}" ${p===BQ.brain.vernacular?'selected':''}>${p}</option>`).join('')}
-              </select>
-              <textarea placeholder="Backstory / use case…" oninput="BQ.brain.background=this.value"
-                        style="width:100%;height:46px;font-size:.63rem;background:#0d0a18;
-                               border:1px solid #3b2a5c;border-radius:4px;color:#c4b8dd;padding:5px;
-                               resize:none;outline:none;">${BQ.brain.background||''}</textarea>`;
+              ${hdr('ROLE','ROLE')}
+              <div style="display:${BQ_BRAIN_OPEN.ROLE?'block':'none'};padding:7px 0;">
+                <select onchange="bqApplyRole(this.value)" style="width:100%;font-size:.63rem;">
+                  <option value="">— custom —</option>
+                  ${BQ_ROLES.map(r=>`<option value="${r.id}" ${r.id===BQ.brain.role?'selected':''}>${r.label}</option>`).join('')}
+                </select>
+                <div style="font-size:.55rem;color:#6b5b8a;margin-top:5px;line-height:1.4;">
+                  ${(BQ_ROLES.find(r=>r.id===BQ.brain.role)||{}).note || 'Pick a role to move voice and manner together.'}
+                </div>
+              </div>
+
+              ${hdr('VOICE','MANNER DIALS')}
+              <div style="display:${BQ_BRAIN_OPEN.VOICE?'block':'none'};padding:7px 0;">
+                ${BQ_BRAIN_DIALS.map(([k,lbl,lo,hi,st])=>`
+                  <div style="margin-bottom:6px;">
+                    <div style="display:flex;justify-content:space-between;font-size:.56rem;color:#8a7ba8;">
+                      <span>${lbl}</span>
+                      <span id="bqb_${k}" style="color:#a855f7;font-family:monospace;">${BQ.brain[k]}</span>
+                    </div>
+                    <input type="range" min="${lo}" max="${hi}" step="${st}" value="${BQ.brain[k]}"
+                           oninput="BQ.brain['${k}']=parseFloat(this.value);document.getElementById('bqb_${k}').textContent=this.value;"
+                           style="width:100%;height:3px;accent-color:#a855f7;">
+                  </div>`).join('')}
+              </div>
+
+              ${hdr('MANNER','DELIVERY')}
+              <div style="display:${BQ_BRAIN_OPEN.MANNER?'block':'none'};padding:7px 0;">
+                ${BQ_BRAIN_SELECTS.map(([k,lbl,opts])=>`
+                  <div style="margin-bottom:6px;">
+                    <div style="font-size:.56rem;color:#8a7ba8;margin-bottom:2px;">${lbl}</div>
+                    <select onchange="BQ.brain['${k}']=this.value" style="width:100%;font-size:.62rem;">
+                      ${opts.map(o=>`<option value="${o}" ${o===BQ.brain[k]?'selected':''}>${o}</option>`).join('')}
+                    </select>
+                  </div>`).join('')}
+              </div>
+
+              ${hdr('WORLD','WORLD & BACKSTORY')}
+              <div style="display:${BQ_BRAIN_OPEN.WORLD?'block':'none'};padding:7px 0;">
+                <div style="font-size:.56rem;color:#8a7ba8;margin-bottom:3px;">World / Setting</div>
+                <input type="text" value="${(BQ.brain.world||'').replace(/"/g,'&quot;')}"
+                       placeholder="e.g. big tech Tokyo, 1940s Chicago, deep space freighter…"
+                       oninput="BQ.brain.world=this.value"
+                       style="width:100%;font-size:.62rem;background:#0d0a18;border:1px solid #3b2a5c;
+                              border-radius:4px;color:#c4b8dd;padding:5px;margin-bottom:7px;outline:none;">
+                <div style="font-size:.56rem;color:#8a7ba8;margin-bottom:3px;">Backstory / Use Case</div>
+                <textarea placeholder="Who is she, what is she for, what does she know…"
+                          oninput="BQ.brain.background=this.value"
+                          style="width:100%;height:60px;font-size:.62rem;background:#0d0a18;
+                                 border:1px solid #3b2a5c;border-radius:4px;color:#c4b8dd;padding:5px;
+                                 resize:none;outline:none;">${BQ.brain.background||''}</textarea>
+              </div>`;
         }
 
         function bqFillMaster() {
