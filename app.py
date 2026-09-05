@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from vault import vault as nobility_vault, status_report, VaultError
+import harvester
 
 app = FastAPI(title="CRANE STUDIO - Voice Foundry & Cast Forge")
 
@@ -79,32 +80,61 @@ async def add_lexicon(entry: dict):
     return {"status": "success", "lexicon": state["lexicon"]}
 
 @app.get("/api/harvest/librivox")
-async def search_librivox(genre: str = "science fiction"):
+async def search_librivox(genre: str = "", title: str = "", limit: int = 8):
+    """Real LibriVox search. Public domain — clean to harvest from."""
+    params = {"format": "json", "limit": str(limit),
+              "fields": "id,title,authors,url_librivox,url_zip_file"}
+    if title:
+        params["title"] = title
+    if genre:
+        params["genre"] = genre
+    url = "https://librivox.org/api/feed/audiobooks/?" + urllib.parse.urlencode(params)
     try:
-        query = urllib.parse.quote(genre)
-        url = f"https://librivox.org/api/feed/audiobooks/?genre={query}&format=json&limit=6"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            books = data.get("books", [])
-            results = []
-            for b in books:
-                results.append({
-                    "title": b.get("title", "Unknown"),
-                    "author": b.get("authors", [{}])[0].get("last_name", "Author"),
-                    "sample_url": b.get("url_librivox", ""),
-                    "genre": genre
-                })
-            return {"status": "success", "results": results}
+        req = urllib.request.Request(url, headers={"User-Agent": "CraneStudio/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
     except Exception as e:
-        return {
-            "status": "simulated",
-            "results": [
-                {"title": f"The Outer Void ({genre.title()})", "author": "Vance", "sample_url": "local_mock"},
-                {"title": f"Chronicles of Consciousness", "author": "Mercer", "sample_url": "local_mock"},
-                {"title": f"Automaton Mind", "author": "St. Clair", "sample_url": "local_mock"}
-            ]
-        }
+        raise HTTPException(status_code=502, detail=f"LibriVox unreachable: {e}")
+
+    if "books" not in data:
+        return {"status": "ok", "results": [],
+                "note": data.get("error", "no matches")}
+
+    out = []
+    for b in data["books"]:
+        authors = b.get("authors") or []
+        who = ", ".join(
+            f"{a.get('first_name','')} {a.get('last_name','')}".strip()
+            for a in authors) or "Unknown"
+        out.append({
+            "id": b.get("id"),
+            "title": b.get("title"),
+            "author": who,
+            "page": b.get("url_librivox", ""),
+        })
+    return {"status": "ok", "results": out}
+
+
+@app.get("/api/harvest/librivox/files")
+async def librivox_files(archive_id: str):
+    """Resolve an archive.org item to its direct MP3 URLs, ready to harvest."""
+    try:
+        req = urllib.request.Request(
+            f"https://archive.org/metadata/{urllib.parse.quote(archive_id)}",
+            headers={"User-Agent": "CraneStudio/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"archive.org unreachable: {e}")
+    if not d.get("files"):
+        raise HTTPException(status_code=404, detail="no files for that item")
+    server, dirn = d.get("server"), d.get("dir")
+    files = [{"name": f["name"],
+              "size_kb": round(int(f.get("size", 0)) / 1024, 1),
+              "url": f"https://{server}{dirn}/{urllib.parse.quote(f['name'])}"}
+             for f in d["files"] if f["name"].lower().endswith((".mp3", ".ogg"))]
+    return {"count": len(files), "files": files[:40]}
+
 
 # ---- NOBILITY DEPOSITORY BRIDGE ----------------------------------------
 # Values are read server-side and never sent to the browser.
@@ -122,6 +152,41 @@ async def vault_reload():
     except VaultError as e:
         raise HTTPException(status_code=503, detail=str(e))
     return {"ok": True, "count": len(nobility_vault.names())}
+
+
+# ---- HARVEST ENGINE ----------------------------------------------------
+
+class HarvestReq(BaseModel):
+    url: str
+    title: str | None = None
+    start: str | None = None
+    end: str | None = None
+
+
+@app.post("/api/harvest/extract")
+async def harvest_extract(req: HarvestReq):
+    job_id, err = harvester.submit(req.url, req.title, req.start, req.end)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/harvest/job/{job_id}")
+async def harvest_job(job_id: str):
+    job = harvester.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="no such job")
+    return job
+
+
+@app.get("/api/harvest/jobs")
+async def harvest_jobs():
+    return {"jobs": harvester.all_jobs()}
+
+
+@app.get("/api/harvest/vault")
+async def harvest_vault():
+    return {"dir": harvester.VOICES_DIR, "files": harvester.vault_files()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -203,6 +268,9 @@ async def serve_ui():
 
             <div style="font-size: 0.75rem; font-weight: bold; color: var(--text-muted); text-transform: uppercase;">The Cast Roster</div>
             <div class="cast-roster" id="rosterList"></div>
+
+            <div style="font-size: 0.75rem; font-weight: bold; color: var(--text-muted); text-transform: uppercase;">Harvested Vault Files</div>
+            <div id="vaultFiles" style="font-size:0.72rem; max-height:150px; overflow-y:auto;"></div>
             
             <button class="btn btn-purple" onclick="switchTab('forge')">+ Forge New Agent</button>
 
@@ -231,7 +299,13 @@ async def serve_ui():
                         <div class="card">
                             <div class="card-title">YouTube Vocal Scraper & Stem Isolator</div>
                             <div style="font-size: 0.75rem; color: var(--text-muted);">Extract audio streams via yt-dlp and isolate clean vocal stems via local Demucs.</div>
-                            <input type="text" id="ytInput" placeholder="Paste YouTube link (interview, speech, monologue)...">
+                            <input type="text" id="ytInput" placeholder="Paste a source URL (YouTube, LibriVox, archive.org, direct audio)...">
+                            <input type="text" id="ytTitle" placeholder="Name this clip (used as the filename)">
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input type="text" id="ytStart" placeholder="start (0:30)" style="flex:1;">
+                                <span style="color:var(--text-muted); font-size:.75rem;">to</span>
+                                <input type="text" id="ytEnd" placeholder="end (1:45)" style="flex:1;">
+                            </div>
                             <div style="display: flex; gap: 8px;">
                                 <button class="btn btn-purple" onclick="harvestYoutube()">Extract Vocal Profile</button>
                                 <button class="btn" style="background: var(--bg-dark); color: #fff; border: 1px solid var(--border);">Test Audio</button>
@@ -342,7 +416,7 @@ async def serve_ui():
     <script>
         let appState = {};
 
-        window.addEventListener('DOMContentLoaded', () => { refreshState(); refreshVault(); });
+        window.addEventListener('DOMContentLoaded', () => { refreshState(); refreshVault(); refreshVaultFiles(); });
 
         const VAULT_COLORS = {
             valid: 'var(--accent-green)',
@@ -485,15 +559,81 @@ async def serve_ui():
             `).join('');
         }
 
-        function harvestYoutube() {
-            const url = document.getElementById('ytInput').value;
-            if(!url) return;
+        async function harvestYoutube() {
+            const url = document.getElementById('ytInput').value.trim();
             const fb = document.getElementById('ytFeedback');
-            fb.innerText = "Extracting stream via yt-dlp... Isolating vocal stem with Demucs...";
-            setTimeout(() => {
-                fb.innerText = "✅ Stem extracted successfully! Added to Voiceprint Vault.";
-                logConsole(`[FOUNDRY]: Vocal isolation finished for ${url}. Clean zero-shot seed ready for persona binding.`);
-            }, 2000);
+            if (!url) { fb.innerText = "Paste a URL first."; return; }
+            const title = (document.getElementById('ytTitle') || {}).value || '';
+            const start = (document.getElementById('ytStart') || {}).value || '';
+            const end   = (document.getElementById('ytEnd')   || {}).value || '';
+
+            fb.style.color = 'var(--accent-blue)';
+            fb.innerText = 'Submitting to harvest engine…';
+
+            let res, data;
+            try {
+                res = await fetch('/api/harvest/extract', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url, title, start, end })
+                });
+                data = await res.json();
+            } catch (e) {
+                fb.style.color = '#ff5555';
+                fb.innerText = 'Engine unreachable: ' + e;
+                return;
+            }
+            if (!res.ok) {
+                fb.style.color = '#ff5555';
+                fb.innerText = '✗ ' + (data.detail || 'rejected');
+                logConsole('[FOUNDRY]: rejected — ' + (data.detail || ''));
+                return;
+            }
+
+            logConsole('[FOUNDRY]: job ' + data.job_id + ' queued for ' + url);
+            pollHarvest(data.job_id, fb);
+        }
+
+        async function pollHarvest(jobId, fb) {
+            for (let i = 0; i < 600; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                let j;
+                try {
+                    j = await (await fetch('/api/harvest/job/' + jobId)).json();
+                } catch { continue; }
+
+                if (j.state === 'done') {
+                    fb.style.color = 'var(--accent-green)';
+                    fb.innerText = '✅ Saved ' + j.file + ' (' + j.size_kb + ' KB)';
+                    logConsole('[FOUNDRY]: ' + j.file + ' — ' + j.size_kb +
+                               ' KB from "' + (j.source_title || '') + '"');
+                    refreshVaultFiles();
+                    return;
+                }
+                if (j.state === 'error') {
+                    fb.style.color = '#ff5555';
+                    fb.innerText = '✗ ' + j.detail;
+                    logConsole('[FOUNDRY]: FAILED — ' + j.detail);
+                    return;
+                }
+                fb.style.color = 'var(--accent-blue)';
+                fb.innerText = j.state + ' — ' + (j.detail || '');
+            }
+            fb.innerText = 'Timed out waiting for the engine.';
+        }
+
+        async function refreshVaultFiles() {
+            const box = document.getElementById('vaultFiles');
+            if (!box) return;
+            try {
+                const d = await (await fetch('/api/harvest/vault')).json();
+                box.innerHTML = d.files.length
+                    ? d.files.map(f =>
+                        '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;">' +
+                        '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + f.file + '</span>' +
+                        '<span style="color:var(--text-muted);">' + f.size_kb + ' KB</span></div>').join('')
+                    : '<div style="color:var(--text-muted);">Vault empty.</div>';
+            } catch { /* engine down */ }
         }
 
         function cloneSample(title) {
