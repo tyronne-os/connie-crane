@@ -930,7 +930,15 @@ async def serve_ui():
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Fira Code', 'Courier New', monospace; }
         body { background: var(--bg-dark); color: var(--text-main); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-        header { height: 50px; background: var(--bg-panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; }
+        header { height: 50px; background: var(--bg-panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; position: relative; }
+        /* ── CENTER NAV ── */
+        .crane-nav { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; background: rgba(0,0,0,.35); border-radius: 8px; padding: 4px; z-index: 10; }
+        .nav-tab { color: #64748b; text-decoration: none; padding: 5px 22px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 2px; transition: .15s; font-family: 'Fira Code','Courier New',monospace; }
+        .nav-tab:hover { color: #f1f5f9; background: rgba(255,255,255,.07); }
+        .nav-tab.active { color: #fff; background: rgba(168,85,247,.28); border: 1px solid rgba(168,85,247,.4); }
+        .nav-tab.depo { }
+        .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: #f59e0b; }
+
         .logo { font-weight: bold; letter-spacing: 1px; font-size: 1rem; color: #fff; }
         .badge { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; border: 1px solid var(--accent-blue); }
         
@@ -1047,8 +1055,13 @@ async def serve_ui():
 </head>
 <body>
     <header>
-        <div class="logo">🏗️ CRANE STUDIO // VOICE FOUNDRY</div>
-        <div class="badge">CONNIE NOLA : CURATED MINING INTEL</div>
+        <div class="logo">🏗️ CRANE STUDIO</div>
+        <nav class="crane-nav">
+          <a href="/" class="nav-tab active">HOME</a>
+          <a href="/connie" class="nav-tab">CONNIE</a>
+          <a href="/depo" class="nav-tab depo">DEPO</a>
+        </nav>
+        <div class="badge">CONNIE NOLA : VOICE FOUNDRY</div>
     </header>
 
     <div class="app-body">
@@ -3359,6 +3372,13 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #modeHint{font-size:10px;color:var(--muted);padding:2px 10px 0;min-height:14px;}
 
 ::-webkit-scrollbar{width:4px;height:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+  #topbar { position: relative; }
+  .crane-nav { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; background: rgba(0,0,0,.35); border-radius: 8px; padding: 4px; z-index: 10; }
+  .nav-tab { color: var(--muted); text-decoration: none; padding: 5px 20px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 2px; transition: .15s; font-family: 'JetBrains Mono',monospace; }
+  .nav-tab:hover { color: var(--text); background: rgba(255,255,255,.07); }
+  .nav-tab.active { color: #fff; background: rgba(168,85,247,.28); border: 1px solid rgba(168,85,247,.4); }
+  .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: var(--gold); }
+
 
 .repo-row{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-family:'JetBrains Mono',monospace;}
 .repo-row:hover{background:rgba(56,189,248,.08);}
@@ -3376,9 +3396,13 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <div class="tb-sep"></div>
   <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()">⎇ GitHub</button>
   <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
+  <nav class="crane-nav">
+    <a href="/" class="nav-tab">HOME</a>
+    <a href="/connie" class="nav-tab">CONNIE</a>
+    <a href="/depo" class="nav-tab depo">DEPO</a>
+  </nav>
   <div class="tb-spacer"></div>
-  <button class="tb-btn active" onclick="window.location='/'">🎙 Voice Foundry</button>
-  <button id="voiceBtn" onclick="window.location='/'">BIG Q</button>
+  <button id="voiceBtn" onclick="window.location='/'">🎙 BIG Q</button>
 </div>
 
 <!-- MAIN -->
@@ -4104,5 +4128,570 @@ window.addEventListener('DOMContentLoaded',()=>{
 </body>
 </html>
 """
+
+# ═══════════════════════════════════════════════════════════════════════
+# /connie — Voice Agent & Consciousness Builder
+# ═══════════════════════════════════════════════════════════════════════
+@app.get("/connie", response_class=HTMLResponse)
+async def serve_connie():
+    return r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CONNIE — Voice Agent Builder</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root{--bg:#070d18;--panel:#0d1627;--card:#111827;--border:#1e3052;--blue:#38bdf8;--purple:#a855f7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--text:#e2e8f0;--muted:#475569;--gold:#f59e0b;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 14px;flex-shrink:0;position:relative;}
+.logo-c{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#a855f7,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;}
+.crane-nav{position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:2px;background:rgba(0,0,0,.35);border-radius:8px;padding:4px;z-index:10;}
+.nav-tab{color:var(--muted);text-decoration:none;padding:5px 20px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:2px;transition:.15s;font-family:'JetBrains Mono',monospace;}
+.nav-tab:hover{color:var(--text);background:rgba(255,255,255,.07);}
+.nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
+.nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
+.tb-spacer{flex:1;}
+.tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
+.tb-btn:hover{border-color:var(--blue);color:var(--blue);}
+#main{display:flex;flex:1;overflow:hidden;}
+.panel{background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+.panel-head{padding:10px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--muted);flex-shrink:0;}
+.panel-body{flex:1;overflow-y:auto;padding:10px;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;margin-bottom:10px;}
+.card-title{font-size:11px;font-weight:700;color:var(--blue);letter-spacing:1px;border-bottom:1px solid var(--border);padding-bottom:6px;}
+label{font-size:10px;color:var(--muted);display:block;margin-bottom:3px;}
+input[type=text],textarea,select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:5px;font-size:12px;outline:none;width:100%;font-family:'Inter',sans-serif;}
+input:focus,textarea:focus,select:focus{border-color:var(--purple);}
+textarea{resize:vertical;min-height:70px;}
+.row{display:flex;gap:8px;}
+.btn{background:var(--purple);color:#fff;border:none;padding:7px 14px;border-radius:5px;cursor:pointer;font-weight:600;font-size:12px;transition:.15s;}
+.btn:hover{opacity:.9;}
+.btn-sm{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;}
+.btn-sm:hover{border-color:var(--purple);color:var(--purple);}
+.slider-row{display:flex;align-items:center;gap:8px;}
+.slider-row label{min-width:90px;color:var(--text);font-size:11px;font-family:'JetBrains Mono',monospace;}
+input[type=range]{flex:1;accent-color:var(--purple);}
+.slider-val{min-width:32px;text-align:right;font-size:11px;color:var(--blue);font-family:'JetBrains Mono',monospace;}
+.agent-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;transition:.15s;display:flex;align-items:center;gap:10px;}
+.agent-card:hover{border-color:var(--purple);}
+.agent-card.active{border-color:var(--purple);background:rgba(168,85,247,.08);}
+.agent-orb{width:40px;height:40px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;}
+.agent-info{flex:1;min-width:0;}
+.agent-name{font-weight:700;font-size:13px;}
+.agent-role{font-size:10px;color:var(--muted);margin-top:1px;}
+.agent-status{font-size:9px;padding:1px 6px;border-radius:10px;flex-shrink:0;}
+.status-live{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3);}
+.status-draft{background:rgba(100,116,139,.15);color:var(--muted);border:1px solid rgba(100,116,139,.2);}
+.center-col{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.orb-stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative;background:radial-gradient(ellipse at center,rgba(168,85,247,.06) 0%,transparent 70%);}
+#consciousnessOrb{width:180px;height:180px;border-radius:50%;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;transition:.3s;}
+.orb-ring{position:absolute;inset:-12px;border-radius:50%;border:1px solid rgba(168,85,247,.25);animation:orbPulse 3s ease-in-out infinite;}
+.orb-ring2{position:absolute;inset:-24px;border-radius:50%;border:1px solid rgba(56,189,248,.12);animation:orbPulse 4s ease-in-out infinite 1s;}
+@keyframes orbPulse{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.04);opacity:1}}
+.orb-name{font-weight:700;font-size:15px;letter-spacing:1px;z-index:1;}
+.orb-role{font-size:10px;color:rgba(255,255,255,.6);z-index:1;}
+.orb-controls{padding:14px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:center;flex-shrink:0;}
+.role-badge{padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--muted);transition:.15s;letter-spacing:.5px;}
+.role-badge:hover{color:var(--text);}
+.role-badge.active{border-color:var(--purple);color:var(--purple);background:rgba(168,85,247,.15);}
+::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+#deployMsg{font-size:11px;color:var(--green);display:none;padding:6px 0;}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <span class="logo-c">CONNIE</span>
+  <nav class="crane-nav">
+    <a href="/" class="nav-tab">HOME</a>
+    <a href="/connie" class="nav-tab active">CONNIE</a>
+    <a href="/depo" class="nav-tab depo">DEPO</a>
+  </nav>
+  <div class="tb-spacer"></div>
+  <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
+  <button class="tb-btn" onclick="window.location='/'">🎙 BIG Q</button>
+</div>
+
+<div id="main">
+
+  <!-- LEFT: agent roster -->
+  <div class="panel" style="width:240px;">
+    <div class="panel-head">VOICE AGENTS</div>
+    <div class="panel-body" id="agentRoster"></div>
+  </div>
+
+  <!-- CENTER: consciousness orb + quick controls -->
+  <div class="center-col">
+    <div class="orb-stage">
+      <div id="consciousnessOrb">
+        <div class="orb-ring"></div>
+        <div class="orb-ring2"></div>
+        <span class="orb-name" id="orbName">CONNIE</span>
+        <span class="orb-role" id="orbRole">select an agent</span>
+      </div>
+    </div>
+    <div class="orb-controls">
+      <span style="font-size:11px;color:var(--muted);align-self:center;">ROLE</span>
+      <span class="role-badge active" onclick="setRole(this,'narrator')">NARRATOR</span>
+      <span class="role-badge" onclick="setRole(this,'companion')">COMPANION</span>
+      <span class="role-badge" onclick="setRole(this,'partner')">PARTNER</span>
+      <span class="role-badge" onclick="setRole(this,'concierge')">CONCIERGE</span>
+      <span class="role-badge" onclick="setRole(this,'podcast')">PODCAST</span>
+      <span class="role-badge" onclick="setRole(this,'character')">CHARACTER</span>
+    </div>
+  </div>
+
+  <!-- RIGHT: consciousness/brain editor -->
+  <div class="panel" style="width:340px;border-right:none;border-left:1px solid var(--border);">
+    <div class="panel-head">CONSCIOUSNESS EDITOR</div>
+    <div class="panel-body">
+
+      <div class="card">
+        <div class="card-title">IDENTITY</div>
+        <div><label>Agent Name</label><input type="text" id="agentName" placeholder="e.g. CONNIE NOLA"></div>
+        <div><label>Role Preset</label>
+          <select id="rolePreset" onchange="loadRolePreset()">
+            <option value="">— choose role —</option>
+            <option value="narrator">Audiobook Narrator</option>
+            <option value="companion">Intimate Companion</option>
+            <option value="partner">Founder's Partner</option>
+            <option value="concierge">Executive Concierge</option>
+            <option value="bright">Bright / High-Energy</option>
+            <option value="podcast">Podcast Host</option>
+            <option value="character">Character Actor</option>
+            <option value="documentary">Documentary Voice</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">MANNER & PERSONALITY</div>
+        <div class="slider-row"><label>Warmth</label><input type="range" min="0" max="100" value="70" oninput="sv(this,'warmthVal')"><span class="slider-val" id="warmthVal">70</span></div>
+        <div class="slider-row"><label>Energy</label><input type="range" min="0" max="100" value="60" oninput="sv(this,'energyVal')"><span class="slider-val" id="energyVal">60</span></div>
+        <div class="slider-row"><label>Expressive</label><input type="range" min="0" max="100" value="65" oninput="sv(this,'expressiveVal')"><span class="slider-val" id="expressiveVal">65</span></div>
+        <div class="slider-row"><label>Wit</label><input type="range" min="0" max="100" value="50" oninput="sv(this,'witVal')"><span class="slider-val" id="witVal">50</span></div>
+        <div class="slider-row"><label>Patience</label><input type="range" min="0" max="100" value="75" oninput="sv(this,'patienceVal')"><span class="slider-val" id="patienceVal">75</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">DELIVERY</div>
+        <div class="row">
+          <div style="flex:1"><label>Pace</label>
+            <select id="dlvPace"><option>deliberate</option><option selected>natural</option><option>brisk</option><option>rapid</option></select>
+          </div>
+          <div style="flex:1"><label>Formality</label>
+            <select id="dlvFormality"><option>casual</option><option selected>warm-pro</option><option>formal</option></select>
+          </div>
+        </div>
+        <div class="row">
+          <div style="flex:1"><label>Emotion</label>
+            <select id="dlvEmotion"><option>flat</option><option>subtle</option><option selected>present</option><option>expressive</option><option>dramatic</option></select>
+          </div>
+          <div style="flex:1"><label>Vernacular</label>
+            <select id="dlvVernacular"><option>neutral</option><option>conversational</option><option selected>cultured</option><option>street</option><option>academic</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">WORLD & BACKSTORY</div>
+        <div><label>Setting / Context</label><input type="text" id="worldSetting" placeholder="e.g. Atlanta, 2031 — tech founder's inner circle"></div>
+        <div><label>Backstory</label><textarea id="worldBackstory" placeholder="Who is this agent? What do they know? What drives them?"></textarea></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">VOICE SOURCE</div>
+        <div><label>Base Voice (from vault)</label>
+          <select id="voiceSource" id="voiceSource"><option value="">loading vault…</option></select>
+        </div>
+        <div class="row">
+          <button class="btn" onclick="deployAgent()">⬡ Deploy Agent</button>
+          <button class="btn-sm" onclick="window.location='/'">🎛 Open BIG Q</button>
+        </div>
+        <div id="deployMsg"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+const ROLE_COLORS = {narrator:'#38bdf8',companion:'#f472b6',partner:'#a855f7',concierge:'#f59e0b',bright:'#fb923c',podcast:'#10b981',character:'#ef4444',documentary:'#94a3b8'};
+const ROLE_EMOJI  = {narrator:'📖',companion:'💜',partner:'🤝',concierge:'🎩',bright:'⚡',podcast:'🎙',character:'🎭',documentary:'🎞'};
+
+let _agents = JSON.parse(localStorage.getItem('crane_agents')||'[]');
+let _activeAgent = null;
+let _activeRole = 'narrator';
+
+function sv(el,id){ document.getElementById(id).textContent=el.value; }
+
+function renderRoster(){
+  const el=document.getElementById('agentRoster'); el.innerHTML='';
+  if(!_agents.length){
+    el.innerHTML='<div style="padding:14px;font-size:11px;color:var(--muted)">No agents yet. Fill in the editor and click Deploy Agent.</div>';
+    return;
+  }
+  _agents.forEach((a,i)=>{
+    const div=document.createElement('div'); div.className='agent-card'+(a.name===_activeAgent?.name?' active':'');
+    const col=ROLE_COLORS[a.role]||'#a855f7'; const em=ROLE_EMOJI[a.role]||'⬡';
+    div.innerHTML=`<div class="agent-orb" style="background:${col}22;border:1px solid ${col}44">${em}</div>
+      <div class="agent-info"><div class="agent-name">${a.name}</div><div class="agent-role">${a.role}</div></div>
+      <span class="agent-status status-live">LIVE</span>`;
+    div.onclick=()=>selectAgent(a,div);
+    el.appendChild(div);
+  });
+}
+
+function selectAgent(a,el){
+  _activeAgent=a;
+  document.querySelectorAll('.agent-card').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('orbName').textContent=a.name;
+  document.getElementById('orbRole').textContent=a.role;
+  const col=ROLE_COLORS[a.role]||'#a855f7';
+  const orb=document.getElementById('consciousnessOrb');
+  orb.style.background=`radial-gradient(circle at center,${col}33,${col}11)`;
+  orb.style.border=`2px solid ${col}66`;
+  document.getElementById('agentName').value=a.name||'';
+  document.getElementById('worldSetting').value=a.setting||'';
+  document.getElementById('worldBackstory').value=a.backstory||'';
+}
+
+function setRole(btn,role){
+  _activeRole=role;
+  document.querySelectorAll('.role-badge').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+async function loadRolePreset(){
+  const role=document.getElementById('rolePreset').value;
+  if(!role) return;
+  try {
+    const r=await fetch('/api/brain/roles');
+    const d=await r.json();
+    const preset=d.roles?.[role];
+    if(!preset) return;
+    // update manner sliders from voice params as proxy
+  } catch(e){}
+  _activeRole=role;
+  document.querySelectorAll('.role-badge').forEach(b=>b.classList.toggle('active',b.dataset?.role===role||b.textContent.toLowerCase()===role));
+}
+
+async function loadVaultSources(){
+  try {
+    const r=await fetch('/api/vault/files');
+    const d=await r.json();
+    const sel=document.getElementById('voiceSource'); sel.innerHTML='<option value="">— no voice selected —</option>';
+    (d.files||[]).forEach(f=>{ const o=document.createElement('option'); o.value=f.filename; o.textContent=f.filename+' ('+f.size+')'; sel.appendChild(o); });
+  } catch(e){}
+}
+
+function deployAgent(){
+  const name=document.getElementById('agentName').value.trim();
+  if(!name){ alert('Agent needs a name'); return; }
+  const agent={
+    name, role:document.getElementById('rolePreset').value||_activeRole,
+    setting:document.getElementById('worldSetting').value,
+    backstory:document.getElementById('worldBackstory').value,
+    voiceSource:document.getElementById('voiceSource').value,
+    warmth:document.querySelector('#main .panel:last-child input[type=range]:nth-child(1)')?.value,
+    created: new Date().toISOString(),
+  };
+  _agents=_agents.filter(a=>a.name!==name);
+  _agents.unshift(agent);
+  localStorage.setItem('crane_agents',JSON.stringify(_agents));
+  renderRoster();
+  const msg=document.getElementById('deployMsg');
+  msg.style.display='block'; msg.textContent='✅ '+name+' deployed and saved';
+  setTimeout(()=>msg.style.display='none',3000);
+}
+
+window.addEventListener('DOMContentLoaded',()=>{ renderRoster(); loadVaultSources(); });
+</script>
+</body>
+</html>
+"""
+
+# ═══════════════════════════════════════════════════════════════════════
+# /depo — Nobility Vault Depository
+# ═══════════════════════════════════════════════════════════════════════
+@app.get("/depo", response_class=HTMLResponse)
+async def serve_depo():
+    return r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DEPO — Nobility Vault</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root{--bg:#070d18;--panel:#0d1627;--card:#111827;--border:#1e3052;--blue:#38bdf8;--purple:#a855f7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--text:#e2e8f0;--muted:#475569;--gold:#f59e0b;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 14px;flex-shrink:0;position:relative;}
+.logo-d{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#f59e0b,#ef4444);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:3px;}
+.crane-nav{position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:2px;background:rgba(0,0,0,.35);border-radius:8px;padding:4px;z-index:10;}
+.nav-tab{color:var(--muted);text-decoration:none;padding:5px 20px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:2px;transition:.15s;font-family:'JetBrains Mono',monospace;}
+.nav-tab:hover{color:var(--text);background:rgba(255,255,255,.07);}
+.nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
+.nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
+.tb-spacer{flex:1;}
+.tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
+.tb-btn:hover{border-color:var(--blue);color:var(--blue);}
+#depoBar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;}
+#searchInp{background:var(--card);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:6px;font-size:12px;outline:none;width:260px;}
+#searchInp:focus{border-color:var(--gold);}
+.filter-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px;}
+.filter-btn:hover{border-color:var(--gold);color:var(--gold);}
+.filter-btn.active{background:rgba(245,158,11,.15);border-color:var(--gold);color:var(--gold);}
+.sort-sel{background:var(--card);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:5px;font-size:11px;outline:none;}
+#vaultStats{font-size:11px;color:var(--muted);margin-left:auto;}
+#vaultStats span{color:var(--gold);font-weight:600;}
+#depoMain{display:flex;flex:1;overflow:hidden;}
+#depoGrid{flex:1;overflow-y:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;align-content:start;}
+.voice-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:.15s;position:relative;}
+.voice-card:hover{border-color:var(--gold);transform:translateY(-1px);box-shadow:0 4px 16px rgba(245,158,11,.1);}
+.voice-card.selected{border-color:var(--gold);background:rgba(245,158,11,.06);}
+.vc-ext{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;font-family:'JetBrains Mono',monospace;}
+.ext-wav{background:rgba(56,189,248,.15);color:var(--blue);}
+.ext-mp3{background:rgba(168,85,247,.15);color:var(--purple);}
+.ext-m4a{background:rgba(16,185,129,.15);color:var(--green);}
+.ext-opus{background:rgba(245,158,11,.15);color:var(--gold);}
+.ext-webm{background:rgba(239,68,68,.15);color:var(--red);}
+.vc-icon{font-size:28px;text-align:center;}
+.vc-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono',monospace;}
+.vc-size{font-size:10px;color:var(--muted);}
+.vc-actions{display:flex;gap:5px;margin-top:2px;}
+.vc-btn{flex:1;background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px;border-radius:4px;font-size:10px;cursor:pointer;text-align:center;transition:.12s;}
+.vc-btn:hover{border-color:var(--purple);color:var(--purple);}
+.vc-btn.primary{background:rgba(168,85,247,.15);border-color:var(--purple);color:var(--purple);}
+#depoDetail{width:300px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+#detailHead{padding:12px 14px;border-bottom:1px solid var(--border);flex-shrink:0;}
+#detailBody{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px;}
+.detail-field{display:flex;flex-direction:column;gap:3px;}
+.detail-label{font-size:10px;color:var(--muted);letter-spacing:.5px;}
+.detail-val{font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text);}
+#audioPlayer{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;display:none;}
+#detailActions{padding:12px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;flex-shrink:0;}
+.act-btn{background:transparent;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:5px;cursor:pointer;font-size:11px;text-align:center;transition:.15s;}
+.act-btn:hover{border-color:var(--purple);color:var(--purple);}
+.act-btn.gold{border-color:var(--gold);color:var(--gold);background:rgba(245,158,11,.08);}
+.act-btn.gold:hover{background:rgba(245,158,11,.15);}
+#uploadZone{border:2px dashed var(--border);border-radius:8px;padding:20px;text-align:center;cursor:pointer;transition:.15s;color:var(--muted);font-size:12px;}
+#uploadZone:hover,#uploadZone.over{border-color:var(--gold);color:var(--gold);}
+#uploadInput{display:none;}
+::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="logo-d">DEPO</span>
+  <nav class="crane-nav">
+    <a href="/" class="nav-tab">HOME</a>
+    <a href="/connie" class="nav-tab">CONNIE</a>
+    <a href="/depo" class="nav-tab depo active">DEPO</a>
+  </nav>
+  <div class="tb-spacer"></div>
+  <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
+  <button class="tb-btn" onclick="window.location='/'">🎙 BIG Q</button>
+</div>
+
+<!-- SEARCH + FILTER BAR -->
+<div id="depoBar">
+  <span style="font-size:12px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:1px;flex-shrink:0">NOBILITY VAULT</span>
+  <input id="searchInp" placeholder="🔍  search voices…" oninput="filterVault()">
+  <button class="filter-btn active" onclick="setFilter(this,'all')">ALL</button>
+  <button class="filter-btn" onclick="setFilter(this,'wav')">WAV</button>
+  <button class="filter-btn" onclick="setFilter(this,'mp3')">MP3</button>
+  <button class="filter-btn" onclick="setFilter(this,'m4a')">M4A</button>
+  <button class="filter-btn" onclick="setFilter(this,'opus')">OPUS</button>
+  <select class="sort-sel" id="sortSel" onchange="sortVault()">
+    <option value="name">Name A→Z</option>
+    <option value="namez">Name Z→A</option>
+    <option value="size">Size ↓</option>
+    <option value="newest">Newest</option>
+  </select>
+  <div id="vaultStats">— files</div>
+  <input id="uploadInput" type="file" accept="audio/*" multiple onchange="handleUpload(this.files)">
+  <button class="tb-btn" style="border-color:var(--gold);color:var(--gold);" onclick="document.getElementById('uploadInput').click()">+ Upload</button>
+</div>
+
+<div id="depoMain">
+  <!-- GRID -->
+  <div id="depoGrid">
+    <div style="color:var(--muted);font-size:12px;padding:20px;grid-column:1/-1;text-align:center">Loading vault…</div>
+  </div>
+
+  <!-- DETAIL PANEL -->
+  <div id="depoDetail">
+    <div id="detailHead">
+      <div style="font-size:11px;font-weight:700;color:var(--gold);letter-spacing:1px">FILE DETAIL</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px" id="detailName">Select a file</div>
+    </div>
+    <div id="detailBody">
+      <audio id="audioPlayer" controls></audio>
+      <div class="detail-field"><span class="detail-label">FILENAME</span><span class="detail-val" id="dvName">—</span></div>
+      <div class="detail-field"><span class="detail-label">FORMAT</span><span class="detail-val" id="dvExt">—</span></div>
+      <div class="detail-field"><span class="detail-label">SIZE</span><span class="detail-val" id="dvSize">—</span></div>
+      <div class="detail-field"><span class="detail-label">VAULT PATH</span><span class="detail-val" id="dvPath" style="font-size:10px;word-break:break-all">—</span></div>
+
+      <!-- Upload zone inside detail -->
+      <div id="uploadZone" onclick="document.getElementById('uploadInput').click()"
+           ondragover="event.preventDefault();this.classList.add('over')"
+           ondragleave="this.classList.remove('over')"
+           ondrop="this.classList.remove('over');handleUpload(event.dataTransfer.files)">
+        🎙 Drop audio files here or click to upload
+      </div>
+      <div id="uploadStatus" style="font-size:11px;color:var(--green);display:none"></div>
+    </div>
+    <div id="detailActions">
+      <button class="act-btn gold" id="sendToBigQ" onclick="sendToBigQ()" style="display:none">🎛 Send to BIG Q Studio</button>
+      <button class="act-btn" id="sendToIDE" onclick="sendToIDE()" style="display:none">💻 Use in IDE Context</button>
+      <button class="act-btn" id="sendToConnie" onclick="sendToConnie()" style="display:none">⬡ Assign to CONNIE Agent</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let _allFiles = [];
+let _filtered = [];
+let _filterExt = 'all';
+let _selected = null;
+
+const EXT_ICON = {wav:'🔵',mp3:'🟣',m4a:'🟢',opus:'🟠',webm:'🔴'};
+
+async function loadVault() {
+  try {
+    const r = await fetch('/api/vault/files');
+    const d = await r.json();
+    _allFiles = d.files || [];
+    sortVault();
+  } catch(e) {
+    document.getElementById('depoGrid').innerHTML = `<div style="color:var(--red);padding:20px;grid-column:1/-1">${e.message}</div>`;
+  }
+}
+
+function setFilter(btn, ext) {
+  _filterExt = ext;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b === btn));
+  filterVault();
+}
+
+function filterVault() {
+  const q = document.getElementById('searchInp').value.toLowerCase();
+  _filtered = _allFiles.filter(f => {
+    const ext = f.filename.split('.').pop().toLowerCase();
+    return (_filterExt === 'all' || ext === _filterExt) && f.filename.toLowerCase().includes(q);
+  });
+  renderGrid();
+}
+
+function sortVault() {
+  const s = document.getElementById('sortSel').value;
+  _filtered = [...(_filtered.length ? _filtered : _allFiles)];
+  if(s === 'name') _filtered.sort((a,b) => a.filename.localeCompare(b.filename));
+  if(s === 'namez') _filtered.sort((a,b) => b.filename.localeCompare(a.filename));
+  if(s === 'size') _filtered.sort((a,b) => parseFloat(b.size) - parseFloat(a.size));
+  renderGrid();
+}
+
+function renderGrid() {
+  const grid = document.getElementById('depoGrid');
+  document.getElementById('vaultStats').innerHTML = `<span>${_filtered.length}</span> / ${_allFiles.length} files`;
+  if(!_filtered.length) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px;grid-column:1/-1;text-align:center">No files found</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  _filtered.forEach(f => {
+    const ext = f.filename.split('.').pop().toLowerCase();
+    const card = document.createElement('div');
+    card.className = 'voice-card' + (f.filename === _selected?.filename ? ' selected' : '');
+    card.innerHTML = `
+      <span class="vc-ext ext-${ext}">${ext.toUpperCase()}</span>
+      <div class="vc-icon">${EXT_ICON[ext]||'🎵'}</div>
+      <div class="vc-name" title="${f.filename}">${f.filename}</div>
+      <div class="vc-size">${f.size}</div>
+      <div class="vc-actions">
+        <div class="vc-btn primary" onclick="selectFile(event,'${f.filename}','${f.size}')">📋 Select</div>
+        <div class="vc-btn" onclick="playFile(event,'${f.filename}')">▶ Play</div>
+        <div class="vc-btn" onclick="sendFileToBigQ(event,'${f.filename}')">🎛 BIG Q</div>
+      </div>`;
+    card.onclick = () => selectFile(null, f.filename, f.size);
+    grid.appendChild(card);
+  });
+}
+
+function selectFile(e, name, size) {
+  if(e) e.stopPropagation();
+  _selected = {filename: name, size};
+  document.querySelectorAll('.voice-card').forEach(c => c.classList.toggle('selected', c.querySelector('.vc-name')?.title === name));
+  const ext = name.split('.').pop().toUpperCase();
+  document.getElementById('detailName').textContent = name;
+  document.getElementById('dvName').textContent = name;
+  document.getElementById('dvExt').textContent = ext;
+  document.getElementById('dvSize').textContent = size;
+  document.getElementById('dvPath').textContent = `/mnt/NOBILITY_VAULT/voice_vault/${name}`;
+  ['sendToBigQ','sendToIDE','sendToConnie'].forEach(id => document.getElementById(id).style.display='block');
+}
+
+function playFile(e, name) {
+  if(e) e.stopPropagation();
+  selectFile(null, name, '');
+  const player = document.getElementById('audioPlayer');
+  player.src = `/api/vault/stream/${encodeURIComponent(name)}`;
+  player.style.display = 'block';
+  player.play().catch(()=>{});
+}
+
+function sendToBigQ() {
+  if(!_selected) return;
+  sessionStorage.setItem('crane_bigq_source', _selected.filename);
+  window.location = '/';
+}
+
+function sendFileToBigQ(e, name) {
+  if(e) e.stopPropagation();
+  sessionStorage.setItem('crane_bigq_source', name);
+  window.location = '/';
+}
+
+function sendToIDE() {
+  if(!_selected) return;
+  sessionStorage.setItem('crane_ide_vault_file', _selected.filename);
+  window.location = '/ide';
+}
+
+function sendToConnie() {
+  if(!_selected) return;
+  sessionStorage.setItem('crane_connie_voice', _selected.filename);
+  window.location = '/connie';
+}
+
+async function handleUpload(files) {
+  const status = document.getElementById('uploadStatus');
+  status.style.display = 'block'; status.textContent = `Uploading ${files.length} file(s)…`;
+  let ok = 0;
+  for(const f of files) {
+    const fd = new FormData();
+    fd.append('file', f, f.name);
+    fd.append('title', f.name.replace(/\.[^.]+$/, ''));
+    try {
+      const r = await fetch('/api/harvest/upload', {method:'POST', body:fd});
+      if(r.ok) ok++;
+    } catch(e){}
+  }
+  status.textContent = `✅ ${ok}/${files.length} uploaded`;
+  await loadVault(); filterVault();
+}
+
+window.addEventListener('DOMContentLoaded', () => { loadVault(); });
+</script>
+</body>
+</html>
+"""
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
