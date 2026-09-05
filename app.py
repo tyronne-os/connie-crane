@@ -192,6 +192,117 @@ async def mixer_render(payload: dict):
         return {"status": "error", "message": str(e)}
 
 
+ROOM_ECHO = {
+    "none":      None,
+    "intimate":  "aecho=0.8:0.82:15:0.12",
+    "medium":    "aecho=0.82:0.87:40:0.20",
+    "large":     "aecho=0.85:0.90:80:0.30",
+    "cathedral": "aecho=0.90:0.95:160:0.42",
+}
+
+@app.post("/api/quincy/render")
+async def quincy_render(payload: dict):
+    """Quincy Jones advanced sculpting — pitch, formant, breathiness, EQ, room."""
+    try:
+        src = payload.get("source")
+        if not src:
+            return {"status": "error", "message": "No source file selected."}
+        in_path = _vault_path(src)
+
+        parts = []
+
+        # Noise gate — cleans up bad mic noise floor
+        if payload.get("gate"):
+            parts.append("agate=threshold=0.02:ratio=10:attack=5:release=200")
+
+        # Pitch shift (semitones) via resample + tempo compensation
+        pitch = float(payload.get("pitch") or 0)
+        if pitch:
+            r = 2 ** (pitch / 12.0)
+            parts.append(f"asetrate={int(24000*r)},aresample=24000,atempo={1/r:.6f}")
+
+        # Independent formant shift (independent of pitch)
+        formant = float(payload.get("formant") or 0)
+        if formant:
+            rf = 2 ** (formant / 12.0)
+            # Apply after pitch so they stack correctly
+            parts.append(f"asetrate={int(24000*rf)},aresample=24000,atempo={1/rf:.6f}")
+
+        # Chest weight — low-mid boost/cut around 200 Hz
+        chest = float(payload.get("chest") or 0)
+        if chest:
+            parts.append(f"equalizer=f=200:t=q:w=1.5:g={chest:.1f}")
+
+        # Presence / bite — upper-mid boost around 4 kHz
+        presence = float(payload.get("presence") or 0)
+        if presence:
+            parts.append(f"equalizer=f=4000:t=q:w=2:g={presence:.1f}")
+
+        # Air shimmer — high shelf around 10 kHz
+        air = float(payload.get("air") or 0)
+        if air:
+            parts.append(f"equalizer=f=10000:t=q:w=3:g={air:.1f}")
+
+        # Breathiness — boost 8 kHz air band + reduce chest compression
+        breath = float(payload.get("breath") or 0)
+        if breath > 0:
+            bg = breath / 100.0 * 5  # 0–5 dB
+            parts.append(f"equalizer=f=8000:t=q:w=2.5:g={bg:.2f}")
+            parts.append(f"highpass=f={int(80 + breath * 0.6)}")  # raise HPF slightly as breathiness increases
+        else:
+            parts.append("highpass=f=80")
+
+        # De-esser — notch at 7 kHz
+        if payload.get("deess"):
+            parts.append("equalizer=f=7000:t=q:w=1:g=-4")
+
+        # Tape warmth — gentle low-pass softening + harmonic coloration via acrusher
+        tape = float(payload.get("tape") or 0)
+        if tape > 20:
+            cutoff = int(16000 - tape * 60)  # 16kHz→10kHz as tape goes 0→100
+            parts.append(f"lowpass=f={max(cutoff,8000)}")
+
+        # Glue compression
+        if payload.get("compress"):
+            parts.append("acompressor=threshold=-18dB:ratio=3:attack=10:release=100:makeup=2dB")
+
+        # Room reverb
+        room = ROOM_ECHO.get(payload.get("room") or "none")
+        if room:
+            parts.append(room)
+
+        # Output normalization
+        if payload.get("norm"):
+            parts.append("dynaudnorm=p=0.9:s=5")
+
+        chain = ",".join(parts) if parts else "anull"
+
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", (payload.get("out_name") or "quincy")).strip("_")[:50] or "quincy"
+        out_name = f"{safe}_{int(time.time())}.wav"
+        out_path = os.path.join(VOICES_DIR, out_name)
+
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+               "-i", in_path, "-af", chain,
+               "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", out_path]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            return {"status": "error", "message": (proc.stderr or "ffmpeg failed").strip()[-400:]}
+
+        state = load_manifest()
+        state["harvested_voices"].insert(0, {"filename": out_name, "source": "quincy"})
+        save_manifest(state)
+        kb = round(os.path.getsize(out_path) / 1024, 1)
+        archetype = payload.get("archetype") or "custom"
+        return {"status": "success", "file": out_name,
+                "message": f"Quincy render complete — {out_name} [{archetype}] {kb} KB"}
+    except FileNotFoundError as e:
+        return {"status": "error", "message": f"Vault file not found: {e}"}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Render timed out (300s)."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/api/models/catalog")
 async def models_catalog():
     return voice_engine.catalog_status()
@@ -753,6 +864,142 @@ async def serve_ui():
                 </div>
                 <div class="status-box" id="modelStatus"></div>
             </div>
+
+            <!-- ══════════ QUINCY JONES ADVANCED ══════════ -->
+            <div class="mixer" id="quincyPanel">
+                <div class="mixer-head">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span class="mixer-title" style="color:#f59e0b;">// Quincy Jones Setting &mdash; Surgical Voice Sculpting</span>
+                        <span class="chip" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.4);color:#f59e0b;">ADVANCED</span>
+                    </div>
+                    <button class="btn-secondary" onclick="qjReset()">&#8635; Reset</button>
+                </div>
+
+                <!-- Archetype selector -->
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <label style="font-size:0.7rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;">Voice Archetype</label>
+                    <select id="qjArchetype" onchange="qjLoadArchetype(this.value)" style="flex:1; min-width:180px;">
+                        <option value="">— Custom / Manual —</option>
+                        <option value="marilyn">Marilyn Monroe — Airy Breathy</option>
+                        <option value="dolly">Dolly Parton — Country Twang</option>
+                        <option value="billie">Billie Holiday — Smoky Jazz</option>
+                        <option value="nina">Nina Simone — Theatrical Power</option>
+                        <option value="eartha">Eartha Kitt — Sultry Purr</option>
+                        <option value="tina">Tina Turner — Raw Rasp</option>
+                        <option value="whitney">Whitney Houston — Soaring Clarity</option>
+                        <option value="ella">Ella Fitzgerald — Warm Round Jazz</option>
+                        <option value="aretha">Aretha Franklin — Gospel Chest</option>
+                        <option value="connie">CONNIE NOLA — Signature Voice</option>
+                    </select>
+                </div>
+
+                <!-- 2-col grid of sliders -->
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px 24px;">
+                    <!-- Pitch -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Pitch Shift</span><span id="qjPitchVal">0 st</span>
+                        </div>
+                        <input type="range" id="qjPitch" min="-6" max="6" step="0.5" value="0"
+                               oninput="document.getElementById('qjPitchVal').textContent=this.value+' st'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Formant -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Formant Shift</span><span id="qjFormantVal">0 st</span>
+                        </div>
+                        <input type="range" id="qjFormant" min="-4" max="4" step="0.5" value="0"
+                               oninput="document.getElementById('qjFormantVal').textContent=this.value+' st'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Breathiness -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Breathiness / Air</span><span id="qjBreathVal">0%</span>
+                        </div>
+                        <input type="range" id="qjBreath" min="0" max="100" value="0"
+                               oninput="document.getElementById('qjBreathVal').textContent=this.value+'%'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Chest Weight -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Chest Weight</span><span id="qjChestVal">0 dB</span>
+                        </div>
+                        <input type="range" id="qjChest" min="-6" max="10" step="0.5" value="0"
+                               oninput="document.getElementById('qjChestVal').textContent=this.value+' dB'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Presence -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Presence / Bite</span><span id="qjPresenceVal">0 dB</span>
+                        </div>
+                        <input type="range" id="qjPresence" min="-6" max="8" step="0.5" value="0"
+                               oninput="document.getElementById('qjPresenceVal').textContent=this.value+' dB'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Air Shimmer -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Air Shimmer (10kHz)</span><span id="qjAirVal">0 dB</span>
+                        </div>
+                        <input type="range" id="qjAir" min="-6" max="8" step="0.5" value="0"
+                               oninput="document.getElementById('qjAirVal').textContent=this.value+' dB'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Tape Warmth -->
+                    <div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Tape Warmth</span><span id="qjTapeVal">0%</span>
+                        </div>
+                        <input type="range" id="qjTape" min="0" max="100" value="0"
+                               oninput="document.getElementById('qjTapeVal').textContent=this.value+'%'"
+                               style="width:100%;accent-color:#f59e0b;">
+                    </div>
+                    <!-- Room Size -->
+                    <div>
+                        <div style="font-size:0.68rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Room / Reverb</div>
+                        <select id="qjRoom" style="width:100%;">
+                            <option value="none">None — Completely Dry</option>
+                            <option value="intimate">Intimate — Closet / Booth</option>
+                            <option value="medium" selected>Medium — Live Room</option>
+                            <option value="large">Large — Concert Hall</option>
+                            <option value="cathedral">Cathedral — Epic</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Toggles row -->
+                <div style="display:flex; gap:12px; flex-wrap:wrap; border-top:1px solid var(--border); padding-top:12px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qjDeEss" checked> De-esser (kills sibilance)
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qjGate"> Noise Gate (clean up bad mic)
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qjCompress" checked> Glue Compression
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qjNorm" checked> Output Normalize
+                    </label>
+                </div>
+
+                <!-- Source + Render -->
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <label style="font-size:0.7rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;">Source File</label>
+                    <select id="qjSource" style="flex:1; min-width:180px;"></select>
+                    <input type="text" id="qjOutName" placeholder="Output name…" style="width:160px;">
+                    <button class="btn" onclick="qjRender()" style="background:linear-gradient(135deg,#d97706,#92400e);">
+                        &#9654; Render Quincy
+                    </button>
+                </div>
+                <div class="status-box" id="qjStatus"></div>
+                <audio id="qjAudio" controls style="display:none; width:100%; margin-top:4px;"></audio>
+            </div>
+
         </div>
 
         <!-- Right Intelligence Panel: Flushed Far Right -->
@@ -824,6 +1071,8 @@ async def serve_ui():
                 
                 const list = document.getElementById('fileList');
                 VAULT_FILES = data.files;
+                window._vaultFiles = data.files;
+                document.dispatchEvent(new Event('vaultLoaded'));
                 if (data.files.length === 0) {
                     list.innerHTML = '<div style="color: var(--text-muted); font-size: 0.72rem;">No files extracted yet.</div>';
                 } else {
@@ -1295,6 +1544,102 @@ async def serve_ui():
 
         initPresets();
         loadModels();
+
+        // ── Quincy Jones Advanced Panel ───────────────────────────────────────
+        const QJ_ARCHETYPES = {
+            marilyn: { pitch:2,   formant:1,  breath:70, chest:-3, presence:1,  air:5,  tape:30, room:'intimate', gate:false, deess:true,  compress:false, norm:true,  label:'Marilyn Monroe — Airy Breathy' },
+            dolly:   { pitch:1.5, formant:1.5,breath:20, chest:1,  presence:3,  air:4,  tape:20, room:'medium',   gate:false, deess:true,  compress:true,  norm:true,  label:'Dolly Parton — Country Twang' },
+            billie:  { pitch:-1.5,formant:-1, breath:30, chest:4,  presence:-1, air:-2, tape:60, room:'large',    gate:false, deess:true,  compress:true,  norm:true,  label:'Billie Holiday — Smoky Jazz' },
+            nina:    { pitch:-2,  formant:-1.5,breath:5, chest:5,  presence:2,  air:-1, tape:40, room:'large',    gate:false, deess:false, compress:true,  norm:true,  label:'Nina Simone — Theatrical Power' },
+            eartha:  { pitch:-1,  formant:-2,  breath:40, chest:3,  presence:0,  air:2,  tape:50, room:'intimate', gate:false, deess:true,  compress:true,  norm:true,  label:'Eartha Kitt — Sultry Purr' },
+            tina:    { pitch:0,   formant:0,   breath:10, chest:2,  presence:5,  air:2,  tape:25, room:'medium',   gate:true,  deess:false, compress:true,  norm:true,  label:'Tina Turner — Raw Rasp' },
+            whitney: { pitch:2,   formant:0,   breath:15, chest:2,  presence:4,  air:5,  tape:10, room:'large',    gate:false, deess:true,  compress:true,  norm:true,  label:'Whitney Houston — Soaring Clarity' },
+            ella:    { pitch:0,   formant:0.5, breath:25, chest:3,  presence:1,  air:1,  tape:45, room:'medium',   gate:false, deess:true,  compress:true,  norm:true,  label:'Ella Fitzgerald — Warm Round Jazz' },
+            aretha:  { pitch:0,   formant:-0.5,breath:5,  chest:6,  presence:3,  air:0,  tape:35, room:'large',    gate:false, deess:false, compress:true,  norm:true,  label:'Aretha Franklin — Gospel Chest' },
+            connie:  { pitch:0.5, formant:0.5, breath:20, chest:2,  presence:2,  air:3,  tape:20, room:'intimate', gate:false, deess:true,  compress:true,  norm:true,  label:'CONNIE NOLA — Signature Voice' },
+        };
+
+        function qjLoadArchetype(key) {
+            const a = QJ_ARCHETYPES[key];
+            if (!a) return;
+            const set = (id,v) => { const el=document.getElementById(id); if(el){el.value=v;el.dispatchEvent(new Event('input'));} };
+            set('qjPitch', a.pitch);
+            set('qjFormant', a.formant);
+            set('qjBreath', a.breath);
+            set('qjChest', a.chest);
+            set('qjPresence', a.presence);
+            set('qjAir', a.air);
+            set('qjTape', a.tape);
+            document.getElementById('qjRoom').value = a.room;
+            document.getElementById('qjGate').checked = a.gate;
+            document.getElementById('qjDeEss').checked = a.deess;
+            document.getElementById('qjCompress').checked = a.compress;
+            document.getElementById('qjNorm').checked = a.norm;
+        }
+
+        function qjReset() {
+            document.getElementById('qjArchetype').value = '';
+            ['qjPitch','qjFormant','qjBreath','qjChest','qjPresence','qjAir','qjTape'].forEach(id => {
+                const el = document.getElementById(id); if(el){el.value=0;el.dispatchEvent(new Event('input'));}
+            });
+            document.getElementById('qjRoom').value = 'medium';
+            document.getElementById('qjGate').checked = false;
+            document.getElementById('qjDeEss').checked = true;
+            document.getElementById('qjCompress').checked = true;
+            document.getElementById('qjNorm').checked = true;
+        }
+
+        function qjPopulateSource() {
+            const sel = document.getElementById('qjSource');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">— pick a vault file —</option>';
+            (window._vaultFiles||[]).forEach(f => {
+                const o = document.createElement('option');
+                o.value = f.filename; o.textContent = f.filename;
+                if(f.filename===cur) o.selected=true;
+                sel.appendChild(o);
+            });
+        }
+
+        async function qjRender() {
+            const src = document.getElementById('qjSource').value;
+            if (!src) { showStatus(document.getElementById('qjStatus'),'Pick a source file first','error'); return; }
+            const st = document.getElementById('qjStatus');
+            showStatus(st,'Rendering through Quincy Jones chain…','');
+            const archetype = document.getElementById('qjArchetype').value;
+            const payload = {
+                source:   src,
+                archetype,
+                pitch:    parseFloat(document.getElementById('qjPitch').value),
+                formant:  parseFloat(document.getElementById('qjFormant').value),
+                breath:   parseFloat(document.getElementById('qjBreath').value),
+                chest:    parseFloat(document.getElementById('qjChest').value),
+                presence: parseFloat(document.getElementById('qjPresence').value),
+                air:      parseFloat(document.getElementById('qjAir').value),
+                tape:     parseFloat(document.getElementById('qjTape').value),
+                room:     document.getElementById('qjRoom').value,
+                gate:     document.getElementById('qjGate').checked,
+                deess:    document.getElementById('qjDeEss').checked,
+                compress: document.getElementById('qjCompress').checked,
+                norm:     document.getElementById('qjNorm').checked,
+                out_name: document.getElementById('qjOutName').value.trim() || (archetype||'quincy'),
+            };
+            const res = await fetch('/api/quincy/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+            const j = await res.json();
+            if (j.status==='success') {
+                showStatus(st,'✅ '+j.message,'success');
+                const au = document.getElementById('qjAudio');
+                au.src = '/api/vault/audio/'+encodeURIComponent(j.file);
+                au.style.display='block'; au.play();
+                loadData();
+            } else {
+                showStatus(st,'❌ '+j.message,'error');
+            }
+        }
+
+        // Populate QJ source whenever vault reloads
+        const _origLoadVault = typeof loadVaultFiles === 'function' ? loadVaultFiles : null;
+        document.addEventListener('vaultLoaded', qjPopulateSource);
 
         // ── Manual Audio Capture (Browser MediaRecorder → WAV) ───────────────
         let _capStream=null, _capRec=null, _capChunks=[], _capInterval=null,
