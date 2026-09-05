@@ -2922,5 +2922,962 @@ async def serve_ui():
 </html>
 """
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# CRANE IDE — Autonomous Coding Agent
+# ═══════════════════════════════════════════════════════════════════════
+import threading
+import requests as _requests
+
+# NVIDIA NIM model catalog (fallback list — also fetched live)
+NVIDIA_CODING_MODELS = [
+    {"id": "deepseek-ai/deepseek-coder-v2-instruct",   "label": "DeepSeek Coder V2",         "tag": "CODE"},
+    {"id": "qwen/qwen2.5-coder-32b-instruct",          "label": "Qwen 2.5 Coder 32B",        "tag": "CODE"},
+    {"id": "nvidia/llama-3.1-nemotron-70b-instruct",   "label": "Nemotron 70B Instruct",     "tag": "NVIDIA"},
+    {"id": "nvidia/nemotron-4-340b-instruct",          "label": "Nemotron 4 340B",           "tag": "NVIDIA★"},
+    {"id": "meta/llama-3.1-405b-instruct",             "label": "Llama 3.1 405B",            "tag": "LARGE"},
+    {"id": "meta/llama-3.1-70b-instruct",              "label": "Llama 3.1 70B",             "tag": "FAST"},
+    {"id": "meta/llama-3.3-70b-instruct",              "label": "Llama 3.3 70B",             "tag": "NEW"},
+    {"id": "mistralai/mistral-large",                  "label": "Mistral Large",             "tag": "INSTRUCT"},
+    {"id": "mistralai/codestral-22b-instruct-v0.1",   "label": "Codestral 22B",             "tag": "CODE"},
+    {"id": "google/gemma-2-27b-it",                   "label": "Gemma 2 27B",               "tag": "GOOGLE"},
+    {"id": "microsoft/phi-3-medium-128k-instruct",    "label": "Phi-3 Medium 128K",         "tag": "FAST"},
+    {"id": "nvidia/starcoder2-15b",                   "label": "StarCoder2 15B",            "tag": "CODE"},
+    {"id": "ibm/granite-34b-code-instruct",           "label": "Granite 34B Code",          "tag": "CODE"},
+]
+
+# GCP config file (stores project + region only — key path stored separately)
+GCP_CONFIG_FILE = os.path.expanduser("~/.crane_gcp.json")
+
+def _load_gcp_config():
+    if os.path.exists(GCP_CONFIG_FILE):
+        try:
+            with open(GCP_CONFIG_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_gcp_config(cfg: dict):
+    with open(GCP_CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+# ── NVIDIA NIM live model fetch ──────────────────────────────────────────────
+@app.get("/api/ide/nvidia/models")
+async def ide_nvidia_models():
+    key = _vault_get("NVIDIA_API_KEY") or _vault_get("NVIDIA_NIM_KEY")
+    if not key:
+        return {"source": "fallback", "models": NVIDIA_CODING_MODELS}
+    try:
+        resp = _requests.get(
+            "https://integrate.api.nvidia.com/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=8
+        )
+        if resp.status_code == 200:
+            raw = resp.json().get("data", [])
+            live = [{"id": m["id"], "label": m["id"].split("/")[-1].replace("-", " ").title(), "tag": "LIVE"}
+                    for m in raw if isinstance(m, dict) and "id" in m]
+            # merge: fallback first (labeled), then any live models not in fallback
+            known_ids = {m["id"] for m in NVIDIA_CODING_MODELS}
+            extra = [m for m in live if m["id"] not in known_ids]
+            return {"source": "live", "models": NVIDIA_CODING_MODELS + extra}
+    except Exception:
+        pass
+    return {"source": "fallback", "models": NVIDIA_CODING_MODELS}
+
+# ── IDE Chat — routes to selected model ──────────────────────────────────────
+class IDEChatRequest(BaseModel):
+    model: str
+    messages: list
+    system: str = ""
+    max_tokens: int = 4096
+    temperature: float = 0.2
+
+@app.post("/api/ide/chat")
+async def ide_chat(req: IDEChatRequest):
+    key = _vault_get("NVIDIA_API_KEY") or _vault_get("NVIDIA_NIM_KEY")
+    if not key:
+        return {"error": "NVIDIA key not found in vault"}
+    msgs = []
+    if req.system:
+        msgs.append({"role": "system", "content": req.system})
+    msgs.extend(req.messages)
+    try:
+        resp = _requests.post(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": req.model,
+                "messages": msgs,
+                "max_tokens": req.max_tokens,
+                "temperature": req.temperature,
+                "stream": False,
+            },
+            timeout=120
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            return {"error": data.get("detail") or data.get("message") or str(data)}
+        content = data["choices"][0]["message"]["content"]
+        return {"content": content, "model": req.model,
+                "usage": data.get("usage", {})}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ── GitHub integration ────────────────────────────────────────────────────────
+class GitHubRepoRequest(BaseModel):
+    owner: str = ""
+    repo: str = ""
+    path: str = ""
+    branch: str = "main"
+
+class GitHubWriteRequest(BaseModel):
+    owner: str
+    repo: str
+    path: str
+    content: str
+    message: str
+    branch: str = "main"
+    sha: str = ""
+
+def _gh_headers():
+    token = _vault_get("GITHUB_TOKEN") or _vault_get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return None, {"error": "No GitHub token in vault. Add GITHUB_TOKEN."}
+    return {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}, None
+
+@app.get("/api/ide/github/repos")
+async def ide_github_repos():
+    hdrs, err = _gh_headers()
+    if err: return err
+    try:
+        r = _requests.get("https://api.github.com/user/repos?per_page=100&sort=updated",
+                          headers=hdrs, timeout=10)
+        repos = r.json()
+        return {"repos": [{"name": x["name"], "full_name": x["full_name"],
+                           "private": x["private"], "language": x.get("language"),
+                           "updated_at": x["updated_at"]} for x in repos if isinstance(x, dict)]}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/ide/github/tree")
+async def ide_github_tree(req: GitHubRepoRequest):
+    hdrs, err = _gh_headers()
+    if err: return err
+    try:
+        url = f"https://api.github.com/repos/{req.owner}/{req.repo}/git/trees/{req.branch}?recursive=1"
+        r = _requests.get(url, headers=hdrs, timeout=15)
+        data = r.json()
+        tree = [{"path": x["path"], "type": x["type"], "size": x.get("size", 0)}
+                for x in data.get("tree", []) if x["type"] in ("blob","tree")]
+        return {"tree": tree}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/ide/github/file")
+async def ide_github_file(req: GitHubRepoRequest):
+    hdrs, err = _gh_headers()
+    if err: return err
+    try:
+        url = f"https://api.github.com/repos/{req.owner}/{req.repo}/contents/{req.path}?ref={req.branch}"
+        r = _requests.get(url, headers=hdrs, timeout=10)
+        data = r.json()
+        if "content" in data:
+            import base64
+            content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+            return {"content": content, "sha": data.get("sha",""), "path": req.path}
+        return {"error": data.get("message","unknown")}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/ide/github/write")
+async def ide_github_write(req: GitHubWriteRequest):
+    hdrs, err = _gh_headers()
+    if err: return err
+    try:
+        import base64
+        payload = {
+            "message": req.message,
+            "content": base64.b64encode(req.content.encode()).decode(),
+            "branch": req.branch,
+        }
+        if req.sha:
+            payload["sha"] = req.sha
+        url = f"https://api.github.com/repos/{req.owner}/{req.repo}/contents/{req.path}"
+        r = _requests.put(url, headers=hdrs, json=payload, timeout=20)
+        data = r.json()
+        if r.status_code in (200, 201):
+            return {"status": "ok", "sha": data.get("content", {}).get("sha", "")}
+        return {"error": data.get("message", str(data))}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ── GCP Config ───────────────────────────────────────────────────────────────
+class GCPConfigRequest(BaseModel):
+    project_id: str
+    region: str = "us-central1"
+    zone: str = "us-central1-a"
+
+@app.get("/api/ide/gcp/status")
+async def ide_gcp_status():
+    cfg = _load_gcp_config()
+    has_creds = bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or cfg.get("credentials_path"))
+    return {"configured": bool(cfg.get("project_id")),
+            "project_id": cfg.get("project_id",""),
+            "region": cfg.get("region","us-central1"),
+            "has_credentials": has_creds}
+
+@app.post("/api/ide/gcp/configure")
+async def ide_gcp_configure(req: GCPConfigRequest):
+    cfg = _load_gcp_config()
+    cfg.update({"project_id": req.project_id, "region": req.region, "zone": req.zone})
+    _save_gcp_config(cfg)
+    return {"status": "saved", "project_id": req.project_id}
+
+# ── Shell exec for IDE terminal (local only) ──────────────────────────────────
+class ShellRequest(BaseModel):
+    cmd: str
+    cwd: str = "/home/hunt"
+
+@app.post("/api/ide/shell")
+async def ide_shell(req: ShellRequest):
+    safe_cwd = req.cwd if os.path.isdir(req.cwd) else "/home/hunt"
+    try:
+        result = subprocess.run(
+            req.cmd, shell=True, capture_output=True, text=True,
+            cwd=safe_cwd, timeout=30
+        )
+        return {"stdout": result.stdout, "stderr": result.stderr, "rc": result.returncode}
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "Command timed out (30s)", "rc": 124}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "rc": 1}
+
+# ── IDE Landing Page ──────────────────────────────────────────────────────────
+@app.get("/ide", response_class=HTMLResponse)
+async def serve_ide():
+    return r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRANE IDE</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap">
+<style>
+/* CodeMirror inline theme */
+.CodeMirror{height:100%;font-family:'JetBrains Mono',monospace;font-size:13px;background:#070d18;color:#e2e8f0;line-height:1.6;}
+.CodeMirror-gutters{background:#0d1627;border-right:1px solid #1e3052;}
+.CodeMirror-linenumber{color:#334155;padding:0 8px;}
+.CodeMirror-cursor{border-left:2px solid #38bdf8;}
+.cm-keyword{color:#c084fc;} .cm-string{color:#86efac;} .cm-comment{color:#475569;font-style:italic;}
+.cm-number{color:#fb923c;} .cm-def{color:#38bdf8;} .cm-variable{color:#e2e8f0;}
+.cm-operator{color:#f472b6;} .cm-atom{color:#fb923c;} .cm-property{color:#7dd3fc;}
+.CodeMirror-selected{background:rgba(56,189,248,0.18)!important;}
+
+:root {
+  --bg: #070d18; --panel: #0d1627; --card: #111827; --border: #1e3052;
+  --blue: #38bdf8; --purple: #a855f7; --green: #10b981; --orange: #f59e0b;
+  --red: #ef4444; --text: #e2e8f0; --muted: #475569;
+  --nvidia: #76b900;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* ── TOPBAR ── */
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 14px;flex-shrink:0;}
+.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#38bdf8,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;margin-right:6px;}
+.tb-badge{background:rgba(118,185,0,0.15);color:var(--nvidia);padding:2px 8px;border-radius:4px;font-size:10px;border:1px solid var(--nvidia);font-weight:600;letter-spacing:1px;}
+.tb-sep{width:1px;height:22px;background:var(--border);margin:0 4px;}
+#tbModelSel{background:var(--card);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:5px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;cursor:pointer;max-width:280px;}
+#tbModelSel:focus{border-color:var(--nvidia);}
+.tb-status{font-size:11px;display:flex;align-items:center;gap:5px;}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dot.warn{background:var(--orange);}
+.tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:.15s;}
+.tb-btn:hover{border-color:var(--blue);color:var(--blue);}
+.tb-btn.active{border-color:var(--purple);color:var(--purple);}
+#tbGHBtn{border-color:rgba(255,255,255,.2);}
+#tbGHBtn.connected{border-color:var(--green);color:var(--green);}
+#tbGCPBtn.connected{border-color:var(--nvidia);color:var(--nvidia);}
+.tb-spacer{flex:1;}
+#voiceBtn{background:linear-gradient(135deg,#7c3aed,#f59e0b);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;letter-spacing:1px;}
+
+/* ── LAYOUT ── */
+#main{display:flex;flex:1;overflow:hidden;}
+
+/* ── SIDEBAR ── */
+#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:.25s;}
+#sidebar.collapsed{width:0;}
+#sideHead{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;}
+#sideHead select{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px;outline:none;}
+#fileTree{flex:1;overflow-y:auto;padding:4px 0;}
+.ft-item{padding:4px 10px 4px 14px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;color:var(--text);}
+.ft-item:hover{background:rgba(56,189,248,.08);}
+.ft-item.active{background:rgba(56,189,248,.15);color:var(--blue);}
+.ft-dir{color:var(--orange);font-weight:600;}
+.ft-indent{display:inline-block;}
+
+/* ── EDITOR AREA ── */
+#editorArea{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+#tabBar{height:34px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;overflow-x:auto;flex-shrink:0;}
+.ed-tab{padding:0 14px;height:34px;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;border-right:1px solid var(--border);white-space:nowrap;color:var(--muted);flex-shrink:0;}
+.ed-tab.active{background:var(--bg);color:var(--text);border-top:2px solid var(--blue);}
+.ed-tab .tab-close{opacity:.4;font-size:13px;line-height:1;}
+.ed-tab .tab-close:hover{opacity:1;color:var(--red);}
+#editorWrap{flex:1;overflow:hidden;position:relative;}
+#terminal{height:180px;background:#020a0f;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;}
+#termHead{padding:4px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);display:flex;gap:10px;align-items:center;}
+#termOut{flex:1;overflow-y:auto;padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;}
+#termInputRow{display:flex;border-top:1px solid var(--border);flex-shrink:0;}
+#termCwd{padding:4px 8px;color:var(--green);font-family:'JetBrains Mono',monospace;font-size:11px;flex-shrink:0;}
+#termInput{flex:1;background:transparent;border:none;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;padding:4px 0;}
+
+/* ── AGENT PANEL ── */
+#agentPanel{width:340px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+#agentHead{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;}
+#agentHead .ah-title{font-weight:700;font-size:13px;letter-spacing:.5px;}
+.model-tag{font-size:9px;background:rgba(118,185,0,.15);color:var(--nvidia);padding:1px 6px;border-radius:3px;border:1px solid var(--nvidia);margin-left:auto;font-family:'JetBrains Mono',monospace;}
+#chatLog{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;}
+.msg{border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.6;max-width:100%;}
+.msg.user{background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);align-self:flex-end;color:var(--text);}
+.msg.agent{background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);align-self:flex-start;color:var(--text);}
+.msg.sys{background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);align-self:center;color:var(--green);font-size:11px;text-align:center;}
+.msg pre{background:rgba(0,0,0,.4);padding:6px 8px;border-radius:4px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:6px;}
+#chatComposer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:6px;flex-shrink:0;}
+#composerTools{display:flex;gap:5px;flex-wrap:wrap;}
+.ctx-btn{background:var(--card);border:1px solid var(--border);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;}
+.ctx-btn:hover{border-color:var(--purple);color:var(--purple);}
+.ctx-btn.active{border-color:var(--purple);color:var(--purple);background:rgba(168,85,247,.15);}
+#chatInput{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;outline:none;resize:none;width:100%;min-height:70px;max-height:160px;}
+#chatInput:focus{border-color:var(--blue);}
+#sendRow{display:flex;align-items:center;gap:6px;}
+#sendBtn{background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;border:none;padding:6px 16px;border-radius:5px;cursor:pointer;font-weight:600;font-size:12px;transition:.15s;}
+#sendBtn:hover{opacity:.9;}
+#sendBtn:disabled{opacity:.4;cursor:default;}
+.thinking{display:flex;gap:4px;align-items:center;padding:6px;}
+.thinking span{width:6px;height:6px;border-radius:50%;background:var(--purple);animation:blink 1.2s infinite;}
+.thinking span:nth-child(2){animation-delay:.3s;}
+.thinking span:nth-child(3){animation-delay:.6s;}
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+
+/* ── MODALS ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9000;display:flex;align-items:center;justify-content:center;}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:24px;min-width:380px;max-width:500px;display:flex;flex-direction:column;gap:14px;}
+.modal h3{font-size:15px;font-weight:700;}
+.modal input,.modal select{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;width:100%;}
+.modal input:focus{border-color:var(--blue);}
+.modal-row{display:flex;gap:8px;}
+.modal-btn{background:var(--purple);color:#fff;border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-weight:600;font-size:12px;flex:1;}
+.modal-btn.sec{background:transparent;border:1px solid var(--border);color:var(--muted);}
+.modal-label{font-size:11px;color:var(--muted);margin-bottom:2px;}
+.modal-hint{font-size:10px;color:var(--muted);line-height:1.5;}
+
+/* scrollbars */
+::-webkit-scrollbar{width:4px;height:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* GH panel */
+#ghPanel{padding:8px 10px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px;}
+.repo-row{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-family:'JetBrains Mono',monospace;}
+.repo-row:hover{background:rgba(56,189,248,.08);}
+.repo-priv{font-size:9px;background:rgba(168,85,247,.2);color:var(--purple);padding:0 4px;border-radius:3px;}
+.repo-pub{font-size:9px;background:rgba(16,185,129,.15);color:var(--green);padding:0 4px;border-radius:3px;}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <span class="logo-ide">CRANE&nbsp;IDE</span>
+  <span class="tb-badge">NVIDIA&nbsp;NIM</span>
+  <div class="tb-sep"></div>
+  <select id="tbModelSel" title="Select NVIDIA NIM model">
+    <option value="">⟳ Loading models…</option>
+  </select>
+  <div class="tb-sep"></div>
+  <div class="tb-status" id="nvStatus"><div class="dot" id="nvDot"></div><span id="nvLabel">NIM</span></div>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()">⎇ GitHub</button>
+  <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP GPU</button>
+  <div class="tb-spacer"></div>
+  <span style="font-size:10px;color:var(--muted);" id="activeModel"></span>
+  <div class="tb-sep"></div>
+  <button class="tb-btn active" onclick="window.location='/'">🎙 Voice Foundry</button>
+  <button id="voiceBtn" onclick="window.location='/'">BIG Q</button>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div id="main">
+
+  <!-- SIDEBAR: file tree -->
+  <div id="sidebar">
+    <div id="sideHead">
+      <span style="font-size:10px;color:var(--muted);flex-shrink:0">REPO</span>
+      <select id="repoSel" onchange="loadRepoTree()">
+        <option value="">connect GitHub…</option>
+      </select>
+    </div>
+    <div id="fileTree"><div style="padding:12px 10px;font-size:11px;color:var(--muted);">Connect GitHub to browse files</div></div>
+  </div>
+
+  <!-- EDITOR + TERMINAL -->
+  <div id="editorArea">
+    <div id="tabBar">
+      <div class="ed-tab active" id="welcomeTab">✦ welcome</div>
+    </div>
+    <div id="editorWrap"></div>
+    <div id="terminal">
+      <div id="termHead">
+        <span style="color:var(--green);font-weight:700;font-size:11px;">TERMINAL</span>
+        <span id="termCwdDisplay" style="color:var(--muted);font-size:10px;">/home/hunt</span>
+        <span style="flex:1"></span>
+        <button class="ctx-btn" onclick="clearTerm()">clear</button>
+      </div>
+      <div id="termOut"></div>
+      <div id="termInputRow">
+        <span id="termCwd">~/</span>
+        <input id="termInput" placeholder="enter command…" onkeydown="termKey(event)">
+      </div>
+    </div>
+  </div>
+
+  <!-- AGENT PANEL -->
+  <div id="agentPanel">
+    <div id="agentHead">
+      <span>⬡</span>
+      <span class="ah-title">CONNIE&nbsp;CODE</span>
+      <span class="model-tag" id="agentModelTag">NVIDIA NIM</span>
+    </div>
+    <div id="chatLog">
+      <div class="msg sys">CRANE IDE is online. Select a model above, connect GitHub, and start coding.</div>
+    </div>
+    <div id="chatComposer">
+      <div id="composerTools">
+        <button class="ctx-btn" id="ctxCodeBtn" onclick="toggleCtx('code')" title="Include open file">&lt;/&gt; code</button>
+        <button class="ctx-btn" id="ctxTermBtn" onclick="toggleCtx('term')" title="Include terminal output">$ term</button>
+        <button class="ctx-btn" id="ctxGitBtn" onclick="toggleCtx('git')" title="Include git diff">⎇ diff</button>
+        <button class="ctx-btn" onclick="injectPrompt('Write tests for the selected code')">🧪 tests</button>
+        <button class="ctx-btn" onclick="injectPrompt('Explain this code step by step')">💡 explain</button>
+        <button class="ctx-btn" onclick="injectPrompt('Find and fix bugs in this code')">🐛 fix</button>
+        <button class="ctx-btn" onclick="injectPrompt('Refactor this code for clarity and performance')">♻ refactor</button>
+        <button class="ctx-btn" onclick="commitCurrentFile()">📤 commit</button>
+      </div>
+      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Shift+Enter for newline, Enter to send)" onkeydown="chatKey(event)"></textarea>
+      <div id="sendRow">
+        <button id="sendBtn" onclick="sendChat()">Send ↑</button>
+        <span style="font-size:10px;color:var(--muted);flex:1;" id="tokenEstimate"></span>
+        <button class="ctx-btn" onclick="clearChat()">clear</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- GITHUB MODAL -->
+<div id="ghModal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>⎇ GitHub Connection</h3>
+    <div>
+      <div class="modal-label">Personal Access Token (stored server-side in env)</div>
+      <input id="ghTokenInput" type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
+      <div class="modal-hint">Needs repo + contents scopes. Token is saved to ~/.crane_gh (never sent to browser).</div>
+    </div>
+    <div class="modal-row">
+      <button class="modal-btn" onclick="saveGHToken()">Save Token</button>
+      <button class="modal-btn sec" onclick="closeModal('ghModal')">Cancel</button>
+    </div>
+    <div id="ghStatus" style="font-size:11px;color:var(--green);display:none;"></div>
+    <div id="ghRepoList" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;"></div>
+  </div>
+</div>
+
+<!-- GCP MODAL -->
+<div id="gcpModal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>☁ Google Cloud GPU</h3>
+    <div>
+      <div class="modal-label">GCP Project ID</div>
+      <input id="gcpProject" type="text" placeholder="my-gcp-project-123">
+    </div>
+    <div class="modal-row" style="gap:8px">
+      <div style="flex:1">
+        <div class="modal-label">Region</div>
+        <select id="gcpRegion" style="background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:5px;width:100%;outline:none;">
+          <option>us-central1</option><option>us-east4</option><option>us-west4</option>
+          <option>europe-west4</option><option>asia-northeast1</option>
+        </select>
+      </div>
+      <div style="flex:1">
+        <div class="modal-label">Zone</div>
+        <select id="gcpZone" style="background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:5px;width:100%;outline:none;">
+          <option>us-central1-a</option><option>us-central1-b</option><option>us-central1-c</option>
+          <option>us-east4-a</option><option>europe-west4-a</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-hint">
+      Set GOOGLE_APPLICATION_CREDENTIALS env var to your service account JSON path before starting CRANE.<br>
+      GPU types available via NGC enterprise: A100 80GB, H100, L4, T4.
+    </div>
+    <div class="modal-row">
+      <button class="modal-btn" onclick="saveGCP()">Save Config</button>
+      <button class="modal-btn sec" onclick="closeModal('gcpModal')">Cancel</button>
+    </div>
+    <div id="gcpMsg" style="font-size:11px;color:var(--green);display:none;"></div>
+  </div>
+</div>
+
+<script>
+// ── STATE ──────────────────────────────────────────────────────────────────
+let _editor = null;
+let _model = '';
+let _ctx = {code: false, term: false, git: false};
+let _messages = [];
+let _tabs = {};           // path → {content, sha, lang, editor}
+let _activeTab = 'welcome';
+let _termCwd = '/home/hunt';
+let _termHistory = [];
+let _repoOwner = '';
+let _repoName = '';
+let _ghToken = '';
+let _termLog = '';
+
+// ── EDITOR INIT ────────────────────────────────────────────────────────────
+function initEditor() {
+  const wrap = document.getElementById('editorWrap');
+  wrap.style.flex = '1';
+  wrap.style.overflow = 'hidden';
+  _editor = CodeMirror(wrap, {
+    value: `// Welcome to CRANE IDE\n// Powered by NVIDIA NIM — Select a model above to start coding\n// Connect GitHub (top bar) to open files\n\nconsole.log("Let's build something great.");`,
+    mode: 'javascript',
+    theme: 'crane',
+    lineNumbers: true,
+    tabSize: 2,
+    indentWithTabs: false,
+    lineWrapping: false,
+    autofocus: true,
+    extraKeys: {
+      'Ctrl-S': saveCurrentFile,
+      'Ctrl-Enter': () => sendChat(),
+    }
+  });
+  _editor.setSize('100%', '100%');
+}
+
+// ── MODEL LOADING ──────────────────────────────────────────────────────────
+async function loadModels() {
+  try {
+    const r = await fetch('/api/ide/nvidia/models');
+    const d = await r.json();
+    const sel = document.getElementById('tbModelSel');
+    sel.innerHTML = '';
+    (d.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = `[${m.tag}] ${m.label}`;
+      sel.appendChild(opt);
+    });
+    // Default to DeepSeek Coder
+    const coding = (d.models || []).find(m => m.tag === 'CODE');
+    if (coding) sel.value = coding.id;
+    _model = sel.value;
+    updateModelDisplay();
+    const nvDot = document.getElementById('nvDot');
+    const nvLabel = document.getElementById('nvLabel');
+    if (d.source === 'live') {
+      nvDot.className = 'dot on'; nvLabel.textContent = 'NIM live';
+    } else {
+      nvDot.className = 'dot warn'; nvLabel.textContent = 'NIM offline';
+    }
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+document.getElementById('tbModelSel').addEventListener('change', function() {
+  _model = this.value;
+  updateModelDisplay();
+});
+
+function updateModelDisplay() {
+  const label = document.getElementById('tbModelSel').selectedOptions[0]?.textContent || _model;
+  document.getElementById('activeModel').textContent = label;
+  document.getElementById('agentModelTag').textContent = _model.split('/').pop()?.slice(0,20) || 'NIM';
+}
+
+// ── GITHUB ─────────────────────────────────────────────────────────────────
+function openGHModal() { document.getElementById('ghModal').style.display='flex'; loadGHRepos(); }
+function openGCPModal() {
+  document.getElementById('gcpModal').style.display='flex';
+  fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{
+    if(d.project_id) document.getElementById('gcpProject').value = d.project_id;
+    if(d.region) document.getElementById('gcpRegion').value = d.region;
+  });
+}
+function closeModal(id) { document.getElementById(id).style.display='none'; }
+
+async function saveGHToken() {
+  const tok = document.getElementById('ghTokenInput').value.trim();
+  if(!tok) return;
+  // Save to server via a temp env approach (write to ~/.crane_gh)
+  const r = await fetch('/api/ide/shell', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cmd:`echo '${tok.replace(/'/g,"'\\''")}' > ~/.crane_gh && chmod 600 ~/.crane_gh`})});
+  const d = await r.json();
+  const st = document.getElementById('ghStatus');
+  if(d.rc === 0) {
+    st.style.display='block'; st.textContent='✅ Token saved. Reload to activate.';
+    document.getElementById('tbGHBtn').classList.add('connected');
+    loadGHRepos();
+  } else {
+    st.style.display='block'; st.style.color='var(--red)'; st.textContent='❌ '+d.stderr;
+  }
+}
+
+async function loadGHRepos() {
+  const r = await fetch('/api/ide/github/repos');
+  const d = await r.json();
+  if(d.error) {
+    document.getElementById('ghRepoList').innerHTML = `<div style="color:var(--red);font-size:11px;padding:6px">${d.error}</div>`;
+    return;
+  }
+  document.getElementById('tbGHBtn').classList.add('connected');
+  const sel = document.getElementById('repoSel');
+  sel.innerHTML = '<option value="">— pick repo —</option>';
+  const list = document.getElementById('ghRepoList');
+  list.innerHTML = '';
+  (d.repos || []).forEach(repo => {
+    const opt = document.createElement('option');
+    opt.value = repo.full_name;
+    opt.textContent = repo.full_name;
+    sel.appendChild(opt);
+    const row = document.createElement('div');
+    row.className = 'repo-row';
+    const badge = repo.private
+      ? '<span class="repo-priv">priv</span>'
+      : '<span class="repo-pub">pub</span>';
+    row.innerHTML = badge + ' ' + repo.name + (repo.language?`<span style="margin-left:auto;font-size:9px;color:var(--muted)">${repo.language}</span>`:'');
+    row.onclick = () => { sel.value = repo.full_name; loadRepoTree(); closeModal('ghModal'); };
+    list.appendChild(row);
+  });
+}
+
+async function loadRepoTree() {
+  const full = document.getElementById('repoSel').value;
+  if(!full) return;
+  const [owner, repo] = full.split('/');
+  _repoOwner = owner; _repoName = repo;
+  const tree = document.getElementById('fileTree');
+  tree.innerHTML = '<div style="padding:10px;color:var(--muted);font-size:11px">Loading…</div>';
+  const r = await fetch('/api/ide/github/tree', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({owner, repo, branch:'main'})});
+  const d = await r.json();
+  if(d.error) { tree.innerHTML = `<div style="color:var(--red);padding:10px;font-size:11px">${d.error}</div>`; return; }
+  renderTree(d.tree || []);
+}
+
+function renderTree(items) {
+  const tree = document.getElementById('fileTree');
+  tree.innerHTML = '';
+  // Build directory structure
+  const dirs = {};
+  items.forEach(item => {
+    const parts = item.path.split('/');
+    const depth = parts.length - 1;
+    const div = document.createElement('div');
+    div.className = 'ft-item' + (item.type==='tree' ? ' ft-dir' : '');
+    div.style.paddingLeft = (14 + depth * 12) + 'px';
+    const icon = item.type === 'tree' ? '📁' : getFileIcon(item.path);
+    div.innerHTML = `${icon} ${parts[parts.length-1]}`;
+    if(item.type === 'blob') {
+      div.onclick = () => openGHFile(item.path);
+    }
+    tree.appendChild(div);
+  });
+}
+
+function getFileIcon(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  const m = {py:'🐍',js:'⚡',ts:'💙',tsx:'⚛',jsx:'⚛',html:'🌐',css:'🎨',md:'📝',json:'{}',sh:'$',yaml:'📋',yml:'📋',txt:'📄',png:'🖼',jpg:'🖼',svg:'✦'};
+  return m[ext] || '📄';
+}
+
+async function openGHFile(path) {
+  if(!_repoOwner) return;
+  const r = await fetch('/api/ide/github/file', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path, branch:'main'})});
+  const d = await r.json();
+  if(d.error) { appendMsg('sys','❌ '+d.error); return; }
+  // detect language
+  const ext = path.split('.').pop().toLowerCase();
+  const langMap = {py:'python',js:'javascript',ts:'javascript',jsx:'javascript',tsx:'javascript',
+    html:'htmlmixed',css:'css',json:'javascript',sh:'shell',md:'markdown',yaml:'yaml',yml:'yaml'};
+  const lang = langMap[ext] || 'text';
+  _editor.setValue(d.content || '');
+  _editor.setOption('mode', lang);
+  _tabs[path] = {content: d.content, sha: d.sha, path};
+  addTab(path);
+  // mark active in tree
+  document.querySelectorAll('.ft-item').forEach(el => {
+    el.classList.toggle('active', el.textContent.includes(path.split('/').pop()));
+  });
+}
+
+// ── TABS ───────────────────────────────────────────────────────────────────
+function addTab(path) {
+  const bar = document.getElementById('tabBar');
+  const fname = path.split('/').pop();
+  if(document.getElementById('tab_'+btoa(path))) {
+    setActiveTab(path); return;
+  }
+  const tab = document.createElement('div');
+  tab.className = 'ed-tab';
+  tab.id = 'tab_'+btoa(path);
+  tab.innerHTML = getFileIcon(path)+' '+fname+'<span class="tab-close" onclick="closeTab(\''+path+'\',event)">×</span>';
+  tab.onclick = () => setActiveTab(path);
+  bar.appendChild(tab);
+  setActiveTab(path);
+}
+
+function setActiveTab(path) {
+  _activeTab = path;
+  document.querySelectorAll('.ed-tab').forEach(t => t.classList.remove('active'));
+  const t = document.getElementById('tab_'+btoa(path));
+  if(t) t.classList.add('active');
+  if(_tabs[path]) {
+    _editor.setValue(_tabs[path].content || '');
+  }
+}
+
+function closeTab(path, e) {
+  e.stopPropagation();
+  const t = document.getElementById('tab_'+btoa(path));
+  if(t) t.remove();
+  delete _tabs[path];
+  _activeTab = 'welcome';
+}
+
+// ── SAVE / COMMIT ──────────────────────────────────────────────────────────
+async function saveCurrentFile() {
+  if(!_activeTab || _activeTab==='welcome' || !_repoOwner) return;
+  const content = _editor.getValue();
+  const sha = _tabs[_activeTab]?.sha || '';
+  const msg = `CRANE IDE: update ${_activeTab.split('/').pop()}`;
+  const r = await fetch('/api/ide/github/write', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path:_activeTab, content, message:msg, sha, branch:'main'})});
+  const d = await r.json();
+  if(d.status === 'ok') {
+    appendMsg('sys','✅ Saved to GitHub: '+_activeTab);
+    if(_tabs[_activeTab]) { _tabs[_activeTab].sha = d.sha; _tabs[_activeTab].content = content; }
+  } else {
+    appendMsg('sys','❌ Save failed: '+(d.error||'unknown'));
+  }
+}
+
+async function commitCurrentFile() {
+  const content = _editor.getValue();
+  const msg = prompt('Commit message:', `CRANE IDE: update ${_activeTab.split('/').pop()}`);
+  if(!msg) return;
+  const sha = _tabs[_activeTab]?.sha || '';
+  const r = await fetch('/api/ide/github/write', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({owner:_repoOwner, repo:_repoName, path:_activeTab, content, message:msg, sha, branch:'main'})});
+  const d = await r.json();
+  appendMsg('sys', d.status==='ok' ? '✅ Committed: '+msg : '❌ '+(d.error||''));
+}
+
+// ── GCP ────────────────────────────────────────────────────────────────────
+async function saveGCP() {
+  const project = document.getElementById('gcpProject').value.trim();
+  const region = document.getElementById('gcpRegion').value;
+  const zone = document.getElementById('gcpZone').value;
+  if(!project) return;
+  const r = await fetch('/api/ide/gcp/configure', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({project_id:project, region, zone})});
+  const d = await r.json();
+  const msg = document.getElementById('gcpMsg');
+  msg.style.display='block';
+  if(d.status==='saved') {
+    msg.textContent = '✅ GCP configured: '+project+' ('+region+')';
+    document.getElementById('tbGCPBtn').classList.add('connected');
+    document.getElementById('tbGCPBtn').textContent = '☁ '+project;
+  } else {
+    msg.style.color='var(--red)'; msg.textContent = '❌ '+JSON.stringify(d);
+  }
+}
+
+// ── TERMINAL ───────────────────────────────────────────────────────────────
+async function runCmd(cmd) {
+  const out = document.getElementById('termOut');
+  const line = document.createElement('div');
+  line.style.cssText = 'color:var(--green);margin-bottom:2px;';
+  line.textContent = '$ ' + cmd;
+  out.appendChild(line);
+  _termLog += '$ '+cmd+'\n';
+  const r = await fetch('/api/ide/shell', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cmd, cwd:_termCwd})});
+  const d = await r.json();
+  if(d.stdout) {
+    const o = document.createElement('pre');
+    o.style.cssText = 'color:var(--text);white-space:pre-wrap;margin-bottom:4px;';
+    o.textContent = d.stdout;
+    out.appendChild(o);
+    _termLog += d.stdout;
+  }
+  if(d.stderr) {
+    const e = document.createElement('pre');
+    e.style.cssText = 'color:var(--red);white-space:pre-wrap;margin-bottom:4px;';
+    e.textContent = d.stderr;
+    out.appendChild(e);
+    _termLog += d.stderr;
+  }
+  // update cwd if cd command
+  if(cmd.trim().startsWith('cd ')) {
+    const newDir = cmd.trim().slice(3).trim();
+    if(d.rc === 0) {
+      const pw = await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({cmd:'pwd',cwd:newDir.startsWith('/')?newDir:_termCwd+'/'+newDir})});
+      const pd = await pw.json();
+      if(pd.stdout) { _termCwd = pd.stdout.trim(); document.getElementById('termCwdDisplay').textContent = _termCwd; }
+    }
+  }
+  out.scrollTop = out.scrollHeight;
+}
+
+function termKey(e) {
+  if(e.key === 'Enter') {
+    const inp = document.getElementById('termInput');
+    const cmd = inp.value.trim();
+    if(!cmd) return;
+    _termHistory.push(cmd);
+    inp.value = '';
+    runCmd(cmd);
+  }
+}
+
+function clearTerm() { document.getElementById('termOut').innerHTML=''; _termLog=''; }
+
+// ── CHAT / AGENT ───────────────────────────────────────────────────────────
+function toggleCtx(key) {
+  _ctx[key] = !_ctx[key];
+  document.getElementById('ctx'+key.charAt(0).toUpperCase()+key.slice(1)+'Btn').classList.toggle('active', _ctx[key]);
+}
+
+function injectPrompt(text) {
+  const inp = document.getElementById('chatInput');
+  inp.value = text;
+  inp.focus();
+}
+
+function chatKey(e) {
+  if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+function appendMsg(role, text) {
+  const log = document.getElementById('chatLog');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  // render code blocks
+  const rendered = text.replace(/```([\s\S]*?)```/g, (_,c)=>`<pre>${escHtml(c)}</pre>`).replace(/\n/g,'<br>');
+  div.innerHTML = rendered;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function clearChat() { document.getElementById('chatLog').innerHTML=''; _messages=[]; }
+
+async function sendChat() {
+  if(!_model) { appendMsg('sys','⚠ Select a model first'); return; }
+  const inp = document.getElementById('chatInput');
+  const userText = inp.value.trim();
+  if(!userText) return;
+  inp.value = '';
+
+  // build context
+  let fullPrompt = userText;
+  if(_ctx.code && _editor) {
+    const sel = _editor.getSelection();
+    const code = sel || _editor.getValue().slice(0, 8000);
+    fullPrompt += '\n\n```\n' + code + '\n```';
+  }
+  if(_ctx.term && _termLog) {
+    fullPrompt += '\n\nTerminal output:\n```\n' + _termLog.slice(-3000) + '\n```';
+  }
+
+  appendMsg('user', userText);
+  _messages.push({role:'user', content: fullPrompt});
+
+  // thinking indicator
+  const thinking = document.createElement('div');
+  thinking.className = 'thinking';
+  thinking.innerHTML = '<span></span><span></span><span></span>';
+  document.getElementById('chatLog').appendChild(thinking);
+
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+
+  try {
+    const systemPrompt = `You are CONNIE CODE, an elite autonomous coding agent inside CRANE IDE. You have access to the user's codebase via GitHub and can execute shell commands. When writing code, format it in fenced code blocks. Be direct, precise, and build production-quality code. The user is building CRANE STUDIO — a FastAPI voice foundry and AI agent platform. When you generate code, offer to write it directly to the file. Repository: ${_repoOwner}/${_repoName || 'not connected'}.`;
+
+    const r = await fetch('/api/ide/chat', {method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model: _model,
+        messages: _messages.slice(-20), // keep last 20 for context window
+        system: systemPrompt,
+        max_tokens: 4096,
+        temperature: 0.2
+      })
+    });
+    const d = await r.json();
+    thinking.remove();
+    if(d.error) { appendMsg('sys','❌ '+d.error); btn.disabled=false; return; }
+    const reply = d.content;
+    _messages.push({role:'assistant', content: reply});
+    appendMsg('agent', reply);
+    // auto-extract and offer to insert code
+    const codeMatch = reply.match(/```(?:\w+)?\n([\s\S]+?)```/);
+    if(codeMatch && _editor) {
+      const applyBtn = document.createElement('button');
+      applyBtn.className = 'ctx-btn';
+      applyBtn.style.cssText = 'background:rgba(16,185,129,.15);border-color:var(--green);color:var(--green);margin-top:6px;';
+      applyBtn.textContent = '⬇ Apply code to editor';
+      applyBtn.onclick = () => { _editor.setValue(codeMatch[1]); applyBtn.remove(); };
+      document.getElementById('chatLog').lastChild.appendChild(applyBtn);
+    }
+  } catch(e) {
+    thinking.remove();
+    appendMsg('sys','❌ '+e.message);
+  }
+  btn.disabled = false;
+  document.getElementById('chatLog').scrollTop = 9999;
+}
+
+// ── GCP STATUS ─────────────────────────────────────────────────────────────
+async function checkGCPStatus() {
+  const r = await fetch('/api/ide/gcp/status');
+  const d = await r.json();
+  if(d.configured) {
+    document.getElementById('tbGCPBtn').classList.add('connected');
+    document.getElementById('tbGCPBtn').textContent = '☁ '+d.project_id;
+  }
+}
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initEditor();
+  loadModels();
+  checkGCPStatus();
+  // auto-load GH repos silently
+  loadGHRepos().catch(()=>{});
+  // Run a quick status check in terminal
+  setTimeout(() => runCmd('echo "CRANE IDE ready — $(date)" && python3 --version && git --version'), 500);
+});
+</script>
+</body>
+</html>
+"""
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
