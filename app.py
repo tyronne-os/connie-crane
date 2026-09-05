@@ -303,6 +303,285 @@ async def quincy_render(payload: dict):
         return {"status": "error", "message": str(e)}
 
 
+# ═══════════════════ QUICK MIX (light tweaks + full EQ) ═══════════════════
+
+EQ_BANDS = [
+    ("sub",    60),
+    ("low",    150),
+    ("lowmid", 400),
+    ("mid",    1000),
+    ("himid",  3000),
+    ("pres",   6000),
+    ("air",    12000),
+]
+
+
+@app.post("/api/quickmix/render")
+async def quickmix_render(payload: dict):
+    """Light-touch tweaks for a voice that's already in good shape."""
+    try:
+        src = payload.get("source")
+        if not src:
+            return {"status": "error", "message": "Pick a source file."}
+        in_path = _vault_path(src)
+
+        parts = []
+        eq = payload.get("eq") or {}
+        for name, freq in EQ_BANDS:
+            g = float(eq.get(name) or 0)
+            if abs(g) > 0.05:
+                parts.append(f"equalizer=f={freq}:t=q:w=1.4:g={g:.1f}")
+
+        gain = float(payload.get("gain") or 0)
+        if abs(gain) > 0.05:
+            parts.append(f"volume={gain:.1f}dB")
+        if payload.get("deess"):
+            parts.append("equalizer=f=7000:t=q:w=1:g=-3")
+        if payload.get("compress"):
+            parts.append("acompressor=threshold=-20dB:ratio=2.5:attack=12:release=120:makeup=1dB")
+        if payload.get("norm", True):
+            parts.append("dynaudnorm=p=0.9:s=5")
+
+        chain = ",".join(parts) if parts else "anull"
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", (payload.get("out_name") or "quick")).strip("_")[:50] or "quick"
+        out_name = f"{safe}_{int(time.time())}.wav"
+        out_path = os.path.join(VOICES_DIR, out_name)
+
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+               "-i", in_path, "-af", chain,
+               "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", out_path]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            return {"status": "error", "message": (proc.stderr or "ffmpeg failed").strip()[-400:]}
+
+        state = load_manifest()
+        state["harvested_voices"].insert(0, {"filename": out_name, "source": "quickmix"})
+        save_manifest(state)
+        kb = round(os.path.getsize(out_path) / 1024, 1)
+        return {"status": "success", "file": out_name,
+                "message": f"Quick mix done — {out_name} · {kb} KB"}
+    except FileNotFoundError as e:
+        return {"status": "error", "message": f"Vault file not found: {e}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ═══════════════════ KEY VAULT STATUS (names only, never values) ═══════════
+
+KEY_PROVIDERS = {
+    "openai": ["OPENAI_API_KEY", "OPENAI_KEY"],
+    "nvidia": ["NVIDIA_API_KEY", "NVIDIA_NIM_KEY"],
+    "grok":   ["GROK_API_KEY", "XAI_API_KEY"],
+    "hf":     ["HF_TOKEN", "HUGGINGFACE_TOKEN"],
+}
+
+
+def _vault_get(name):
+    """Read one credential. Values stay server-side — never returned to a client."""
+    try:
+        from vault import vault as nobility_vault
+        v = nobility_vault.get(name)
+        if v:
+            return v
+    except Exception:
+        pass
+    return os.environ.get(name)
+
+
+@app.get("/api/keys/status")
+async def keys_status():
+    """Which providers are reachable. Booleans only — no credential material."""
+    out = {}
+    for prov, names in KEY_PROVIDERS.items():
+        out[prov] = any(bool(_vault_get(n)) for n in names)
+    return {"providers": out}
+
+
+# ═══════════════════ BIG Q — mixing agent chat ═══════════════════
+
+QJ_DEFAULTS = {
+    "pitch": 0, "formant": 0, "breath": 0, "chest": 0, "presence": 0,
+    "air": 0, "tape": 0, "room": "medium",
+    "gate": False, "deess": True, "compress": True, "norm": True,
+}
+
+# Mixing vernacular → parameter deltas. The agent's ears.
+MIX_RULES = [
+    (r"\b(bright|brighter|brighten|crisp|crisper)\b",        {"air": +2, "presence": +1}),
+    (r"\b(dark|darker|warm|warmer|mellow)\b",                {"air": -2, "tape": +20}),
+    (r"\b(air|airy|breath|breathy|whisper|wispy)\b",         {"breath": +20, "air": +2}),
+    (r"\b(less breath|less air|solid|grounded)\b",           {"breath": -20, "air": -1}),
+    (r"\b(deep|deeper|lower|drop the pitch)\b",              {"pitch": -1}),
+    (r"\b(high|higher|lift the pitch|raise the pitch)\b",    {"pitch": +1}),
+    (r"\b(thick|thicker|full|fuller|chest|body|beef)\b",     {"chest": +2}),
+    (r"\b(thin|thinner|less chest|less body|less boom)\b",   {"chest": -2}),
+    (r"\b(boom|boomy|muddy|mud)\b",                          {"chest": -3, "gate": True}),
+    (r"\b(clear|clearer|presence|cut through|forward)\b",    {"presence": +2}),
+    (r"\b(recess|recessed|back off|softer|behind)\b",        {"presence": -2}),
+    (r"\b(nasal|nasally|honky)\b",                           {"formant": -1, "presence": -1}),
+    (r"\b(young|younger|smaller|petite)\b",                  {"formant": +1}),
+    (r"\b(old|older|bigger|larger|heavier)\b",               {"formant": -1}),
+    (r"\b(vintage|tape|analog|analogue|retro|old school)\b", {"tape": +25}),
+    (r"\b(modern|digital|clean|pristine|hifi)\b",            {"tape": -20}),
+    (r"\b(tinny|thin mic|laptop|cheap mic)\b",               {"tape": +40, "chest": +3, "air": -3, "gate": True}),
+    (r"\b(harsh|sibilan|hissy|essy|too much s)\b",           {"deess": True, "air": -2}),
+    (r"\b(nois|hum|hiss|background)\b",                      {"gate": True}),
+    (r"\b(even|glue|level|consistent|smooth out)\b",         {"compress": True}),
+]
+
+ROOM_RULES = [
+    (r"\b(dry|no room|no reverb|close mic|tight)\b",              "none"),
+    (r"\b(intimate|closer|close|booth|closet|in my ear)\b",       "intimate"),
+    (r"\b(room|medium room|live room)\b",                         "medium"),
+    (r"\b(big|hall|large|spacious|stage|concert)\b",              "large"),
+    (r"\b(cathedral|church|epic|massive|huge space)\b",           "cathedral"),
+]
+
+ARCHETYPE_WORDS = {
+    "marilyn": ["marilyn", "monroe"],
+    "dolly":   ["dolly", "parton", "country"],
+    "billie":  ["billie", "holiday", "smoky", "smokey"],
+    "nina":    ["nina", "simone", "theatrical"],
+    "eartha":  ["eartha", "kitt", "sultry", "purr"],
+    "tina":    ["tina", "turner", "rasp", "raspy"],
+    "whitney": ["whitney", "houston", "soaring"],
+    "ella":    ["ella", "fitzgerald"],
+    "aretha":  ["aretha", "franklin", "gospel"],
+    "connie":  ["connie", "nola", "signature", "default"],
+}
+
+ARCHETYPE_PARAMS = {
+    "marilyn": {"pitch":2,"formant":1,"breath":70,"chest":-3,"presence":1,"air":5,"tape":30,"room":"intimate","gate":False,"deess":True,"compress":False,"norm":True},
+    "dolly":   {"pitch":1.5,"formant":1.5,"breath":20,"chest":1,"presence":3,"air":4,"tape":20,"room":"medium","gate":False,"deess":True,"compress":True,"norm":True},
+    "billie":  {"pitch":-1.5,"formant":-1,"breath":30,"chest":4,"presence":-1,"air":-2,"tape":60,"room":"large","gate":False,"deess":True,"compress":True,"norm":True},
+    "nina":    {"pitch":-2,"formant":-1.5,"breath":5,"chest":5,"presence":2,"air":-1,"tape":40,"room":"large","gate":False,"deess":False,"compress":True,"norm":True},
+    "eartha":  {"pitch":-1,"formant":-2,"breath":40,"chest":3,"presence":0,"air":2,"tape":50,"room":"intimate","gate":False,"deess":True,"compress":True,"norm":True},
+    "tina":    {"pitch":0,"formant":0,"breath":10,"chest":2,"presence":5,"air":2,"tape":25,"room":"medium","gate":True,"deess":False,"compress":True,"norm":True},
+    "whitney": {"pitch":2,"formant":0,"breath":15,"chest":2,"presence":4,"air":5,"tape":10,"room":"large","gate":False,"deess":True,"compress":True,"norm":True},
+    "ella":    {"pitch":0,"formant":0.5,"breath":25,"chest":3,"presence":1,"air":1,"tape":45,"room":"medium","gate":False,"deess":True,"compress":True,"norm":True},
+    "aretha":  {"pitch":0,"formant":-0.5,"breath":5,"chest":6,"presence":3,"air":0,"tape":35,"room":"large","gate":False,"deess":False,"compress":True,"norm":True},
+    "connie":  {"pitch":0.5,"formant":0.5,"breath":20,"chest":2,"presence":2,"air":3,"tape":20,"room":"intimate","gate":False,"deess":True,"compress":True,"norm":True},
+}
+
+PARAM_LIMITS = {
+    "pitch": (-6, 6), "formant": (-4, 4), "breath": (0, 100),
+    "chest": (-6, 10), "presence": (-6, 8), "air": (-6, 8), "tape": (0, 100),
+}
+
+
+def _intensity(text):
+    if re.search(r"\b(way|much|a lot|lots|really|very|super|heavy|heavily|max)\b", text):
+        return 2.0
+    if re.search(r"\b(slight|slightly|a bit|a little|little|touch|hair|subtle|barely)\b", text):
+        return 0.5
+    return 1.0
+
+
+def _apply_mix_language(text, params):
+    """Map mixing vernacular onto parameter moves. Returns (params, notes)."""
+    t = (text or "").lower()
+    p = dict(params)
+    notes = []
+    mult = _intensity(t)
+
+    for key, words in ARCHETYPE_WORDS.items():
+        if any(re.search(r"\b" + re.escape(w) + r"\b", t) for w in words):
+            p.update(ARCHETYPE_PARAMS[key])
+            notes.append(f"loaded the {key.upper()} archetype")
+            break
+
+    negate = bool(re.search(r"\b(less|reduce|cut|drop|remove|take out|kill|no more)\b", t))
+
+    for pattern, deltas in MIX_RULES:
+        if re.search(pattern, t):
+            for k, v in deltas.items():
+                if isinstance(v, bool):
+                    p[k] = (not v) if negate else v
+                    notes.append(f"{k} {'off' if not p[k] else 'on'}")
+                else:
+                    step = v * mult * (-1 if negate else 1)
+                    lo, hi = PARAM_LIMITS.get(k, (-100, 100))
+                    before = float(p.get(k) or 0)
+                    p[k] = max(lo, min(hi, round(before + step, 2)))
+                    if p[k] != before:
+                        notes.append(f"{k} {before:+g} → {p[k]:+g}")
+
+    for pattern, room in ROOM_RULES:
+        if re.search(pattern, t):
+            p["room"] = room
+            notes.append(f"room → {room}")
+            break
+
+    return p, notes
+
+
+@app.post("/api/bigq/chat")
+async def bigq_chat(payload: dict):
+    """Talk to the mixing agent. Returns updated params + what it heard."""
+    text = (payload.get("message") or "").strip()
+    if not text:
+        return {"status": "error", "message": "Say something."}
+    params = {**QJ_DEFAULTS, **(payload.get("params") or {})}
+    new_params, notes = _apply_mix_language(text, params)
+
+    if notes:
+        reply = "Adjusted: " + "; ".join(notes[:8]) + "."
+    else:
+        reply = ("I didn't catch a mix move in that. Try things like "
+                 "\"warmer and closer\", \"less boom\", \"make it breathy like Marilyn\", "
+                 "\"fix this tinny laptop mic\", or name an archetype.")
+    return {"status": "success", "reply": reply, "params": new_params, "changed": notes}
+
+
+@app.post("/api/bigq/render")
+async def bigq_render(payload: dict):
+    """Render the Big Q graph — same DSP core as the Quincy panel."""
+    return await quincy_render(payload)
+
+
+# ═══════════════════ THE LABEL — finished voice agent gallery ═══════════════
+
+def _label_state(state):
+    if "label" not in state or not isinstance(state.get("label"), list):
+        state["label"] = []
+    return state
+
+
+@app.get("/api/label/list")
+async def label_list():
+    state = _label_state(load_manifest())
+    return {"agents": state["label"]}
+
+
+@app.post("/api/label/add")
+async def label_add(payload: dict):
+    """Sign a finished voice agent to The Label."""
+    state = _label_state(load_manifest())
+    name = (payload.get("name") or "").strip() or f"Agent {len(state['label'])+1}"
+    entry = {
+        "id": f"agent_{int(time.time())}",
+        "name": name[:60],
+        "file": payload.get("file"),
+        "archetype": payload.get("archetype") or "custom",
+        "params": payload.get("params") or {},
+        "brain": payload.get("brain") or {},
+        "created": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    state["label"].insert(0, entry)
+    save_manifest(state)
+    return {"status": "success", "agent": entry,
+            "message": f"“{entry['name']}” signed to The Label."}
+
+
+@app.post("/api/label/remove")
+async def label_remove(payload: dict):
+    state = _label_state(load_manifest())
+    aid = payload.get("id")
+    state["label"] = [a for a in state["label"] if a.get("id") != aid]
+    save_manifest(state)
+    return {"status": "success"}
+
+
 @app.get("/api/models/catalog")
 async def models_catalog():
     return voice_engine.catalog_status()
@@ -665,6 +944,53 @@ async def serve_ui():
                 </div>
             </div>
 
+            <!-- ══════════ QUICK MIX ══════════ -->
+            <div class="mixer" style="border-color:rgba(52,211,153,.28);">
+                <div class="mixer-head" style="border-color:rgba(52,211,153,.2);">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span class="mixer-title" style="color:#34d399;">// Quick Mix &mdash; Light Touch &amp; Full EQ</span>
+                        <span class="chip" style="background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.35);color:#34d399;">STAY CLOSE TO SOURCE</span>
+                    </div>
+                    <button class="btn-secondary" onclick="qmReset()">&#8635; Flat</button>
+                </div>
+
+                <div style="font-size:0.64rem;color:var(--text-muted);">
+                    For voices already in good shape &mdash; or a clone of someone you know that you want to keep recognisable.
+                    Need to rebuild the voice from the ground up? Hit <strong style="color:#f59e0b;">BIG Q</strong> in the mixer below.
+                </div>
+
+                <!-- 7-band EQ -->
+                <div id="qmEq" style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;align-items:end;padding:6px 0;"></div>
+
+                <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--border);padding-top:12px;">
+                    <div style="flex:1;min-width:150px;">
+                        <div style="display:flex;justify-content:space-between;font-size:0.66rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">
+                            <span>Output Gain</span><span id="qmGainVal">0 dB</span>
+                        </div>
+                        <input type="range" id="qmGain" min="-12" max="12" step="0.5" value="0"
+                               oninput="document.getElementById('qmGainVal').textContent=this.value+' dB'"
+                               style="width:100%;accent-color:#34d399;">
+                    </div>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qmDeEss" checked> De-ess
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qmCompress"> Gentle Glue
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;cursor:pointer;">
+                        <input type="checkbox" id="qmNorm" checked> Normalize
+                    </label>
+                </div>
+
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select id="qmSource" style="flex:1;min-width:170px;"></select>
+                    <input type="text" id="qmOutName" placeholder="Output name…" style="width:150px;">
+                    <button class="btn" onclick="qmRender()" style="background:linear-gradient(135deg,#059669,#065f46);">&#9654; Quick Render</button>
+                </div>
+                <div class="status-box" id="qmStatus"></div>
+                <audio id="qmAudio" controls style="display:none;width:100%;margin-top:4px;"></audio>
+            </div>
+
             <!-- ══════════ VOICE FOUNDRY MIXER ══════════ -->
             <div class="mixer">
                 <div class="mixer-head">
@@ -674,6 +1000,10 @@ async def serve_ui():
                     </div>
                     <div style="display:flex; gap:6px;">
                         <button class="btn-secondary" onclick="clearChannels()">Clear Channels</button>
+                        <button class="btn" onclick="openBigQ()" id="bigQBtn"
+                                style="background:linear-gradient(135deg,#7c3aed,#f59e0b);font-weight:bold;letter-spacing:1px;">
+                            &#9673; BIG Q
+                        </button>
                     </div>
                 </div>
 
@@ -1000,6 +1330,22 @@ async def serve_ui():
                 <audio id="qjAudio" controls style="display:none; width:100%; margin-top:4px;"></audio>
             </div>
 
+            <!-- ══════════ THE LABEL ══════════ -->
+            <div class="mixer" style="border-color:rgba(236,72,153,.28);">
+                <div class="mixer-head" style="border-color:rgba(236,72,153,.2);">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span class="mixer-title" style="color:#ec4899;">&#9733; The Label &mdash; Signed Voice Agents</span>
+                        <span class="chip" id="labelCount" style="background:rgba(236,72,153,.1);border-color:rgba(236,72,153,.35);color:#ec4899;">0 SIGNED</span>
+                    </div>
+                    <button class="btn-secondary" onclick="loadLabel()">&#8635; Refresh</button>
+                </div>
+                <div id="labelGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;">
+                    <div style="color:var(--text-muted);font-size:0.7rem;">
+                        No agents signed yet. Master a voice in BIG Q Studio and send it here.
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         <!-- Right Intelligence Panel: Flushed Far Right -->
@@ -1057,6 +1403,83 @@ async def serve_ui():
                 <div id="capFeedback" style="font-size:0.72rem; color:#10b981; min-height:14px;"></div>
             </div>
         </div>
+    </div>
+
+    <!-- ═══════════════════ BIG Q STUDIO — node canvas ═══════════════════ -->
+    <div id="bigq" style="display:none; position:fixed; inset:0; z-index:9000;
+         background:radial-gradient(ellipse 70% 60% at 30% 20%, #1a1030 0%, #05070E 55%, #04060C 100%);">
+
+      <!-- Top bar -->
+      <div style="height:52px; border-bottom:1px solid #241b3d; display:flex; align-items:center;
+                  justify-content:space-between; padding:0 18px; background:rgba(10,8,20,.85);">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <span style="font-family:monospace; font-weight:bold; font-size:1rem; letter-spacing:3px;
+                       background:linear-gradient(90deg,#a855f7,#f59e0b); -webkit-background-clip:text;
+                       -webkit-text-fill-color:transparent; background-clip:text;">◉ BIG Q STUDIO</span>
+          <span style="font-size:.6rem; color:#6b5b8a; letter-spacing:1.5px;">NODE CANVAS · MIXING AGENT · VOICE FORGE</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div id="bqKeys" style="display:flex; gap:5px;"></div>
+          <button class="btn-secondary" onclick="bqResetGraph()">Reset Graph</button>
+          <button class="btn-secondary" onclick="closeBigQ()">✕ Exit to Mixer</button>
+        </div>
+      </div>
+
+      <!-- Canvas + chat -->
+      <div style="display:flex; height:calc(100% - 52px);">
+
+        <!-- Node canvas -->
+        <div id="bqCanvas" style="flex:1; position:relative; overflow:hidden; cursor:grab;">
+          <svg id="bqWires" style="position:absolute; inset:0; width:100%; height:100%;
+               pointer-events:none; z-index:1;"></svg>
+          <div id="bqNodes" style="position:absolute; inset:0; z-index:2;"></div>
+
+          <!-- Orb: fixed instant-tuning control -->
+          <div id="bqOrb" onclick="bqOrbToggle()" title="Instant tune"
+               style="position:absolute; right:26px; top:50%; transform:translateY(-50%); z-index:5;
+                      width:88px; height:88px; border-radius:50%; cursor:pointer;
+                      background:radial-gradient(circle at 32% 30%, #c084fc 0%, #a855f7 34%, #f59e0b 100%);
+                      box-shadow:0 0 34px rgba(168,85,247,.55), 0 0 70px rgba(245,158,11,.28), inset 0 0 22px rgba(255,255,255,.16);
+                      display:flex; align-items:center; justify-content:center;
+                      font-family:monospace; font-size:.56rem; font-weight:bold; color:#fff;
+                      letter-spacing:1.5px; text-shadow:0 1px 4px rgba(0,0,0,.6);
+                      transition:transform .18s, box-shadow .18s;">TUNE</div>
+
+          <!-- Orb tuning tray -->
+          <div id="bqOrbTray" style="display:none; position:absolute; right:130px; top:50%;
+               transform:translateY(-50%); z-index:6; width:250px; background:rgba(14,10,26,.97);
+               border:1px solid #4c1d95; border-radius:10px; padding:16px;
+               box-shadow:0 10px 44px rgba(0,0,0,.65);">
+            <div style="font-family:monospace; font-size:.6rem; letter-spacing:2px; color:#f59e0b;
+                        margin-bottom:12px;">INSTANT TUNE</div>
+            <div id="bqOrbSliders" style="display:flex; flex-direction:column; gap:10px;"></div>
+            <button class="btn" onclick="bqRender()" style="width:100%; margin-top:14px;
+                    background:linear-gradient(135deg,#7c3aed,#f59e0b);">▶ Render Now</button>
+          </div>
+        </div>
+
+        <!-- Chat rail -->
+        <div style="width:330px; border-left:1px solid #241b3d; background:rgba(8,6,16,.9);
+                    display:flex; flex-direction:column;">
+          <div style="padding:12px 16px; border-bottom:1px solid #241b3d;">
+            <div style="font-family:monospace; font-size:.66rem; letter-spacing:2px; color:#a855f7;">
+              ◉ MIXING AGENT
+            </div>
+            <div style="font-size:.58rem; color:#5b4b7a; margin-top:3px;">
+              Speak in plain mixing language — it moves the dials.
+            </div>
+          </div>
+          <div id="bqChatLog" style="flex:1; overflow-y:auto; padding:14px 16px;
+                                     display:flex; flex-direction:column; gap:10px;"></div>
+          <div style="padding:12px 14px; border-top:1px solid #241b3d; display:flex; gap:6px;">
+            <input type="text" id="bqChatInput" placeholder="warmer and closer…"
+                   style="flex:1; background:#0d0a18; border:1px solid #3b2a5c; border-radius:5px;
+                          padding:9px 11px; color:#e9e2f5; font-size:.76rem; outline:none;">
+            <button class="btn" onclick="bqSend()"
+                    style="background:linear-gradient(135deg,#7c3aed,#a855f7); padding:9px 15px;">➤</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script>
@@ -1545,6 +1968,432 @@ async def serve_ui():
         initPresets();
         loadModels();
 
+        // ══════════════════ QUICK MIX ══════════════════
+        const QM_BANDS = [
+            ['sub','60Hz'],['low','150'],['lowmid','400'],['mid','1k'],
+            ['himid','3k'],['pres','6k'],['air','12k']
+        ];
+
+        function qmInit() {
+            const wrap = document.getElementById('qmEq');
+            if (!wrap) return;
+            wrap.innerHTML = QM_BANDS.map(([k,lbl]) => `
+                <div style="display:flex;flex-direction:column;align-items:center;gap:5px;">
+                  <span id="qmv_${k}" style="font-family:monospace;font-size:.6rem;color:#34d399;">0</span>
+                  <input type="range" id="qm_${k}" min="-12" max="12" step="0.5" value="0"
+                         oninput="document.getElementById('qmv_${k}').textContent=(this.value>0?'+':'')+this.value"
+                         style="writing-mode:vertical-lr;direction:rtl;width:22px;height:78px;accent-color:#34d399;">
+                  <span style="font-size:.55rem;color:var(--text-muted);letter-spacing:.5px;">${lbl}</span>
+                </div>`).join('');
+        }
+
+        function qmReset() {
+            QM_BANDS.forEach(([k]) => {
+                const el = document.getElementById('qm_'+k);
+                if (el) { el.value = 0; el.dispatchEvent(new Event('input')); }
+            });
+            const g = document.getElementById('qmGain');
+            if (g) { g.value = 0; g.dispatchEvent(new Event('input')); }
+        }
+
+        function qmPopulate() {
+            const sel = document.getElementById('qmSource');
+            if (!sel) return;
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">— pick a vault file —</option>';
+            (window._vaultFiles||[]).forEach(f => {
+                const o = document.createElement('option');
+                o.value = f.filename; o.textContent = f.filename;
+                if (f.filename === cur) o.selected = true;
+                sel.appendChild(o);
+            });
+        }
+
+        async function qmRender() {
+            const st = document.getElementById('qmStatus');
+            const src = document.getElementById('qmSource').value;
+            if (!src) { showStatus(st,'Pick a source file first','error'); return; }
+            showStatus(st,'Rendering quick mix…','');
+            const eq = {};
+            QM_BANDS.forEach(([k]) => eq[k] = parseFloat(document.getElementById('qm_'+k).value));
+            const res = await fetch('/api/quickmix/render',{
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({
+                    source: src, eq,
+                    gain: parseFloat(document.getElementById('qmGain').value),
+                    deess: document.getElementById('qmDeEss').checked,
+                    compress: document.getElementById('qmCompress').checked,
+                    norm: document.getElementById('qmNorm').checked,
+                    out_name: document.getElementById('qmOutName').value.trim() || 'quick',
+                })});
+            const j = await res.json();
+            if (j.status === 'success') {
+                showStatus(st,'✅ '+j.message,'success');
+                const au = document.getElementById('qmAudio');
+                au.src = '/api/vault/audio/'+encodeURIComponent(j.file);
+                au.style.display='block'; au.play();
+                loadData();
+            } else showStatus(st,'❌ '+j.message,'error');
+        }
+
+        // ══════════════════ BIG Q STUDIO ══════════════════
+        let BQ = {
+            params: { pitch:0, formant:0, breath:0, chest:0, presence:0, air:0,
+                      tape:0, room:'medium', gate:false, deess:true, compress:true, norm:true },
+            source: '', archetype: '', lastFile: null,
+            brain: { personality:'warm', vernacular:'nola', background:'' },
+            nodes: {}, drag: null,
+        };
+
+        const BQ_NODE_DEFS = [
+            { id:'vault',  x: 40,  y: 40,  w:220, title:'NOBILITY VAULT',  color:'#38bdf8', icon:'▤' },
+            { id:'preset', x: 40,  y:250,  w:220, title:'PRESET',          color:'#f59e0b', icon:'◆' },
+            { id:'eq',     x:310,  y: 40,  w:250, title:'EQ / SCULPT',     color:'#34d399', icon:'≋' },
+            { id:'brain',  x:310,  y:300,  w:250, title:'BRAIN PLAYGROUND',color:'#a855f7', icon:'◉' },
+            { id:'master', x:610,  y: 60,  w:230, title:'MASTER OUT',      color:'#ec4899', icon:'▶' },
+        ];
+
+        const BQ_WIRES = [
+            ['vault','eq'], ['preset','eq'], ['eq','master'], ['brain','master'],
+        ];
+
+        function openBigQ() {
+            document.getElementById('bigq').style.display = 'block';
+            bqBuildNodes();
+            bqBuildOrb();
+            bqLoadKeys();
+            if (!document.getElementById('bqChatLog').children.length) {
+                bqPush('agent', 'Big Q online. Load a voice from the vault node, then tell me what you want — "warmer and closer", "fix this tinny laptop mic", "make her breathy like Marilyn".');
+            }
+        }
+        function closeBigQ(){ document.getElementById('bigq').style.display = 'none'; }
+
+        function bqBuildNodes() {
+            const host = document.getElementById('bqNodes');
+            host.innerHTML = '';
+            BQ_NODE_DEFS.forEach(d => {
+                if (!BQ.nodes[d.id]) BQ.nodes[d.id] = { x:d.x, y:d.y };
+                const p = BQ.nodes[d.id];
+                const el = document.createElement('div');
+                el.id = 'bqn_'+d.id;
+                el.style.cssText = `position:absolute;left:${p.x}px;top:${p.y}px;width:${d.w}px;
+                    background:rgba(13,10,24,.96);border:1px solid ${d.color}55;border-radius:9px;
+                    box-shadow:0 6px 26px rgba(0,0,0,.5);overflow:hidden;`;
+                el.innerHTML = `
+                  <div class="bq-drag" data-node="${d.id}"
+                       style="padding:8px 12px;background:${d.color}18;border-bottom:1px solid ${d.color}33;
+                              cursor:grab;display:flex;align-items:center;gap:8px;">
+                    <span style="color:${d.color};font-size:.8rem;">${d.icon}</span>
+                    <span style="font-family:monospace;font-size:.62rem;letter-spacing:1.5px;color:${d.color};">${d.title}</span>
+                  </div>
+                  <div id="bqbody_${d.id}" style="padding:11px 12px;font-size:.7rem;color:#c4b8dd;"></div>`;
+                host.appendChild(el);
+            });
+            bqFillVault(); bqFillPreset(); bqFillEq(); bqFillBrain(); bqFillMaster();
+            bqDrawWires();
+            bqBindDrag();
+        }
+
+        function bqFillVault() {
+            const b = document.getElementById('bqbody_vault');
+            const files = window._vaultFiles || [];
+            b.innerHTML = `
+              <select id="bqSource" onchange="BQ.source=this.value;bqFillMaster();"
+                      style="width:100%;margin-bottom:7px;">
+                <option value="">— pick voice —</option>
+                ${files.map(f=>`<option value="${f.filename}" ${f.filename===BQ.source?'selected':''}>${f.filename.slice(0,30)}</option>`).join('')}
+              </select>
+              <div style="font-size:.58rem;color:#6b5b8a;">${files.length} files · ${(window._labelAgents||[]).length} signed agents</div>`;
+        }
+
+        function bqFillPreset() {
+            const b = document.getElementById('bqbody_preset');
+            b.innerHTML = `
+              <select id="bqArch" onchange="bqApplyArch(this.value)" style="width:100%;">
+                <option value="">— custom —</option>
+                ${Object.keys(QJ_ARCHETYPES).map(k=>`<option value="${k}" ${k===BQ.archetype?'selected':''}>${QJ_ARCHETYPES[k].label}</option>`).join('')}
+              </select>`;
+        }
+
+        function bqApplyArch(k) {
+            BQ.archetype = k;
+            const a = QJ_ARCHETYPES[k];
+            if (a) {
+                ['pitch','formant','breath','chest','presence','air','tape','room','gate','deess','compress','norm']
+                  .forEach(p => { if (a[p] !== undefined) BQ.params[p] = a[p]; });
+                bqPush('agent', `Loaded ${a.label}.`);
+            }
+            bqFillEq(); bqBuildOrb();
+        }
+
+        const BQ_EQ_PARAMS = [
+            ['pitch','Pitch','st',-6,6,0.5], ['formant','Formant','st',-4,4,0.5],
+            ['breath','Breath','%',0,100,1],  ['chest','Chest','dB',-6,10,0.5],
+            ['presence','Presence','dB',-6,8,0.5], ['air','Air','dB',-6,8,0.5],
+            ['tape','Tape','%',0,100,1],
+        ];
+
+        function bqFillEq() {
+            const b = document.getElementById('bqbody_eq');
+            b.innerHTML = BQ_EQ_PARAMS.map(([k,lbl,u,lo,hi,st]) => `
+              <div style="margin-bottom:7px;">
+                <div style="display:flex;justify-content:space-between;font-size:.57rem;color:#8a7ba8;margin-bottom:2px;">
+                  <span>${lbl}</span><span id="bqv_${k}" style="color:#34d399;font-family:monospace;">${BQ.params[k]}${u}</span>
+                </div>
+                <input type="range" id="bqe_${k}" min="${lo}" max="${hi}" step="${st}" value="${BQ.params[k]}"
+                       oninput="BQ.params['${k}']=parseFloat(this.value);document.getElementById('bqv_${k}').textContent=this.value+'${u}';bqSyncOrb();"
+                       style="width:100%;height:3px;accent-color:#34d399;">
+              </div>`).join('') + `
+              <select onchange="BQ.params.room=this.value" style="width:100%;margin-top:5px;font-size:.65rem;">
+                ${['none','intimate','medium','large','cathedral'].map(r=>`<option value="${r}" ${r===BQ.params.room?'selected':''}>${r}</option>`).join('')}
+              </select>`;
+        }
+
+        function bqFillBrain() {
+            const b = document.getElementById('bqbody_brain');
+            b.innerHTML = `
+              <div style="font-size:.57rem;color:#8a7ba8;margin-bottom:3px;">Personality</div>
+              <select onchange="BQ.brain.personality=this.value" style="width:100%;margin-bottom:7px;font-size:.65rem;">
+                ${['warm','sharp','playful','maternal','seductive','professional','streetwise']
+                  .map(p=>`<option value="${p}" ${p===BQ.brain.personality?'selected':''}>${p}</option>`).join('')}
+              </select>
+              <div style="font-size:.57rem;color:#8a7ba8;margin-bottom:3px;">Vernacular</div>
+              <select onchange="BQ.brain.vernacular=this.value" style="width:100%;margin-bottom:7px;font-size:.65rem;">
+                ${['nola','harlem','atl','deep south','broadcast','academic']
+                  .map(p=>`<option value="${p}" ${p===BQ.brain.vernacular?'selected':''}>${p}</option>`).join('')}
+              </select>
+              <textarea placeholder="Backstory / use case…" oninput="BQ.brain.background=this.value"
+                        style="width:100%;height:46px;font-size:.63rem;background:#0d0a18;
+                               border:1px solid #3b2a5c;border-radius:4px;color:#c4b8dd;padding:5px;
+                               resize:none;outline:none;">${BQ.brain.background||''}</textarea>`;
+        }
+
+        function bqFillMaster() {
+            const b = document.getElementById('bqbody_master');
+            if (!b) return;
+            b.innerHTML = `
+              <div style="font-size:.6rem;color:#8a7ba8;margin-bottom:7px;">
+                ${BQ.source ? '▶ '+BQ.source.slice(0,26) : 'no source loaded'}
+              </div>
+              <input type="text" id="bqName" placeholder="Agent name…"
+                     style="width:100%;margin-bottom:7px;font-size:.65rem;">
+              <button class="btn" onclick="bqRender()" style="width:100%;margin-bottom:6px;
+                      background:linear-gradient(135deg,#7c3aed,#f59e0b);">▶ Render Master</button>
+              <button class="btn" onclick="bqSign()" style="width:100%;
+                      background:linear-gradient(135deg,#db2777,#9d174d);">★ Sign to The Label</button>
+              <div id="bqMasterStatus" style="font-size:.58rem;color:#6b5b8a;margin-top:6px;"></div>`;
+        }
+
+        // ── wires ──
+        function bqDrawWires() {
+            const svg = document.getElementById('bqWires');
+            svg.innerHTML = BQ_WIRES.map(([a,b]) => {
+                const na = BQ.nodes[a], nb = BQ.nodes[b];
+                const da = BQ_NODE_DEFS.find(d=>d.id===a), db = BQ_NODE_DEFS.find(d=>d.id===b);
+                if (!na||!nb) return '';
+                const x1 = na.x + da.w, y1 = na.y + 28;
+                const x2 = nb.x,        y2 = nb.y + 28;
+                const mx = (x1+x2)/2;
+                return `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"
+                        stroke="#a855f7" stroke-width="1.6" fill="none" opacity=".5"/>
+                        <circle cx="${x1}" cy="${y1}" r="3" fill="#a855f7"/>
+                        <circle cx="${x2}" cy="${y2}" r="3" fill="#f59e0b"/>`;
+            }).join('');
+        }
+
+        function bqBindDrag() {
+            document.querySelectorAll('.bq-drag').forEach(h => {
+                h.onmousedown = e => {
+                    const id = h.dataset.node;
+                    BQ.drag = { id, ox: e.clientX - BQ.nodes[id].x, oy: e.clientY - BQ.nodes[id].y };
+                    h.style.cursor = 'grabbing';
+                    e.preventDefault();
+                };
+            });
+        }
+        document.addEventListener('mousemove', e => {
+            if (!BQ.drag) return;
+            const n = BQ.nodes[BQ.drag.id];
+            n.x = e.clientX - BQ.drag.ox;
+            n.y = e.clientY - BQ.drag.oy;
+            const el = document.getElementById('bqn_'+BQ.drag.id);
+            if (el) { el.style.left = n.x+'px'; el.style.top = n.y+'px'; }
+            bqDrawWires();
+        });
+        document.addEventListener('mouseup', () => {
+            if (BQ.drag) {
+                const h = document.querySelector(`.bq-drag[data-node="${BQ.drag.id}"]`);
+                if (h) h.style.cursor = 'grab';
+            }
+            BQ.drag = null;
+        });
+
+        function bqResetGraph() {
+            BQ.nodes = {};
+            BQ.params = { pitch:0,formant:0,breath:0,chest:0,presence:0,air:0,
+                          tape:0,room:'medium',gate:false,deess:true,compress:true,norm:true };
+            BQ.archetype = '';
+            bqBuildNodes(); bqBuildOrb();
+        }
+
+        // ── orb ──
+        const BQ_ORB_KEYS = ['breath','chest','presence','air'];
+        function bqOrbToggle() {
+            const t = document.getElementById('bqOrbTray');
+            const open = t.style.display === 'block';
+            t.style.display = open ? 'none' : 'block';
+            const orb = document.getElementById('bqOrb');
+            orb.style.transform = open ? 'translateY(-50%)' : 'translateY(-50%) scale(1.1)';
+        }
+        function bqBuildOrb() {
+            const w = document.getElementById('bqOrbSliders');
+            if (!w) return;
+            w.innerHTML = BQ_ORB_KEYS.map(k => {
+                const d = BQ_EQ_PARAMS.find(p=>p[0]===k);
+                return `<div>
+                  <div style="display:flex;justify-content:space-between;font-size:.56rem;color:#a99cc4;">
+                    <span>${d[1]}</span><span id="bqo_${k}" style="color:#f59e0b;font-family:monospace;">${BQ.params[k]}</span>
+                  </div>
+                  <input type="range" id="bqorb_${k}" min="${d[3]}" max="${d[4]}" step="${d[5]}" value="${BQ.params[k]}"
+                         oninput="BQ.params['${k}']=parseFloat(this.value);document.getElementById('bqo_${k}').textContent=this.value;bqSyncEq();"
+                         style="width:100%;height:3px;accent-color:#f59e0b;">
+                </div>`;
+            }).join('');
+        }
+        function bqSyncOrb(){ BQ_ORB_KEYS.forEach(k=>{
+            const s=document.getElementById('bqorb_'+k), v=document.getElementById('bqo_'+k);
+            if(s){s.value=BQ.params[k];} if(v){v.textContent=BQ.params[k];} }); }
+        function bqSyncEq(){ BQ_ORB_KEYS.forEach(k=>{
+            const s=document.getElementById('bqe_'+k), v=document.getElementById('bqv_'+k);
+            const d=BQ_EQ_PARAMS.find(p=>p[0]===k);
+            if(s){s.value=BQ.params[k];} if(v){v.textContent=BQ.params[k]+d[2];} }); }
+
+        // ── chat ──
+        function bqPush(who, text) {
+            const log = document.getElementById('bqChatLog');
+            const me = who === 'me';
+            const d = document.createElement('div');
+            d.style.cssText = `align-self:${me?'flex-end':'flex-start'};max-width:88%;
+                background:${me?'#3b2a5c':'#141024'};border:1px solid ${me?'#5b3fa0':'#2a2140'};
+                border-radius:8px;padding:8px 11px;font-size:.71rem;line-height:1.45;
+                color:${me?'#e9e2f5':'#bdb0d6'};`;
+            d.textContent = text;
+            log.appendChild(d);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function bqSend() {
+            const inp = document.getElementById('bqChatInput');
+            const msg = inp.value.trim();
+            if (!msg) return;
+            bqPush('me', msg);
+            inp.value = '';
+            const res = await fetch('/api/bigq/chat', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ message: msg, params: BQ.params })
+            });
+            const j = await res.json();
+            if (j.status === 'success') {
+                BQ.params = { ...BQ.params, ...j.params };
+                bqPush('agent', j.reply);
+                bqFillEq(); bqBuildOrb();
+            } else bqPush('agent', j.message || 'Something went wrong.');
+        }
+
+        // ── render / sign ──
+        async function bqRender() {
+            const st = document.getElementById('bqMasterStatus');
+            if (!BQ.source) { bqPush('agent','Load a voice in the Vault node first.'); return; }
+            if (st) st.textContent = 'rendering…';
+            bqPush('agent','Rendering…');
+            const res = await fetch('/api/bigq/render', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ ...BQ.params, source: BQ.source,
+                    archetype: BQ.archetype || 'custom',
+                    out_name: (document.getElementById('bqName')?.value.trim()) || 'bigq' })
+            });
+            const j = await res.json();
+            if (j.status === 'success') {
+                BQ.lastFile = j.file;
+                if (st) st.innerHTML = `<span style="color:#34d399;">✓ ${j.file}</span>`;
+                bqPush('agent','Done — ' + j.message + ' Playing it now.');
+                new Audio('/api/vault/audio/'+encodeURIComponent(j.file)).play().catch(()=>{});
+                loadData();
+            } else {
+                if (st) st.innerHTML = `<span style="color:#f87171;">${j.message}</span>`;
+                bqPush('agent','Render failed: ' + j.message);
+            }
+        }
+
+        async function bqSign() {
+            if (!BQ.lastFile) { bqPush('agent','Render a master first, then sign it.'); return; }
+            const name = (document.getElementById('bqName')?.value.trim()) || BQ.archetype || 'Untitled Agent';
+            const res = await fetch('/api/label/add', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ name, file: BQ.lastFile,
+                    archetype: BQ.archetype || 'custom', params: BQ.params, brain: BQ.brain })
+            });
+            const j = await res.json();
+            bqPush('agent', j.message || 'Signed.');
+            loadLabel();
+        }
+
+        async function bqLoadKeys() {
+            try {
+                const r = await fetch('/api/keys/status');
+                const j = await r.json();
+                const names = { openai:'OpenAI', nvidia:'NVIDIA', grok:'Grok', hf:'HF' };
+                document.getElementById('bqKeys').innerHTML = Object.entries(j.providers||{})
+                  .map(([k,ok])=>`<span style="font-family:monospace;font-size:.53rem;padding:3px 7px;
+                    border-radius:3px;border:1px solid ${ok?'#34d39955':'#3a3050'};
+                    color:${ok?'#34d399':'#4b4060'};background:${ok?'#34d39912':'transparent'};">
+                    ${ok?'●':'○'} ${names[k]||k}</span>`).join('');
+            } catch(e) {}
+        }
+
+        // ══════════════════ THE LABEL ══════════════════
+        async function loadLabel() {
+            try {
+                const r = await fetch('/api/label/list');
+                const j = await r.json();
+                const agents = j.agents || [];
+                window._labelAgents = agents;
+                document.getElementById('labelCount').textContent = agents.length + ' SIGNED';
+                const grid = document.getElementById('labelGrid');
+                if (!agents.length) {
+                    grid.innerHTML = `<div style="color:var(--text-muted);font-size:0.7rem;">
+                      No agents signed yet. Master a voice in BIG Q Studio and send it here.</div>`;
+                    return;
+                }
+                grid.innerHTML = agents.map(a => `
+                  <div style="background:#0c1220;border:1px solid rgba(236,72,153,.25);border-radius:7px;padding:11px;">
+                    <div style="font-weight:bold;font-size:.76rem;color:#f9a8d4;margin-bottom:3px;">${a.name}</div>
+                    <div style="font-size:.58rem;color:var(--text-muted);margin-bottom:7px;">
+                      ${a.archetype} · ${(a.brain&&a.brain.vernacular)||'—'} · ${a.created||''}
+                    </div>
+                    <div style="display:flex;gap:5px;">
+                      <button class="btn-secondary" style="flex:1;font-size:.6rem;"
+                              onclick="new Audio('/api/vault/audio/'+encodeURIComponent('${a.file}')).play()">▶ Play</button>
+                      <button class="btn-secondary" style="font-size:.6rem;"
+                              onclick="labelRemove('${a.id}')">✕</button>
+                    </div>
+                  </div>`).join('');
+            } catch(e) {}
+        }
+
+        async function labelRemove(id) {
+            await fetch('/api/label/remove', { method:'POST',
+                headers:{'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+            loadLabel();
+        }
+
+        document.getElementById('bqChatInput')?.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); bqSend(); }
+        });
+
+        qmInit();
+        loadLabel();
+
         // ── Quincy Jones Advanced Panel ───────────────────────────────────────
         const QJ_ARCHETYPES = {
             marilyn: { pitch:2,   formant:1,  breath:70, chest:-3, presence:1,  air:5,  tape:30, room:'intimate', gate:false, deess:true,  compress:false, norm:true,  label:'Marilyn Monroe — Airy Breathy' },
@@ -1638,8 +2487,11 @@ async def serve_ui():
         }
 
         // Populate QJ source whenever vault reloads
-        const _origLoadVault = typeof loadVaultFiles === 'function' ? loadVaultFiles : null;
-        document.addEventListener('vaultLoaded', qjPopulateSource);
+        document.addEventListener('vaultLoaded', () => {
+            qjPopulateSource();
+            qmPopulate();
+            if (document.getElementById('bigq')?.style.display === 'block') bqFillVault();
+        });
 
         // ── Manual Audio Capture (Browser MediaRecorder → WAV) ───────────────
         let _capStream=null, _capRec=null, _capChunks=[], _capInterval=null,
