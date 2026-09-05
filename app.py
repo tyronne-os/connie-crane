@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import time
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -429,6 +429,8 @@ KEY_PROVIDERS = {
     "nvidia": ["NVIDIA_API_KEY", "NVIDIA_NIM_KEY"],
     "grok":   ["GROK_API_KEY", "XAI_API_KEY"],
     "hf":     ["HF_TOKEN", "HUGGINGFACE_TOKEN"],
+    "aws":    ["AWS_ACCESS_KEY_ID"],
+    "aws_secret": ["AWS_SECRET_ACCESS_KEY"],
 }
 
 
@@ -914,7 +916,11 @@ async def harvest_media(req: ExtractRequest):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=RedirectResponse)
+async def serve_root():
+    return RedirectResponse(url="/ide")
+
+@app.get("/studio", response_class=HTMLResponse)
 async def serve_ui():
     return """<!DOCTYPE html>
 <html lang="en">
@@ -1057,9 +1063,10 @@ async def serve_ui():
     <header>
         <div class="logo">🏗️ CRANE STUDIO</div>
         <nav class="crane-nav">
-          <a href="/" class="nav-tab active">HOME</a>
+          <a href="/ide" class="nav-tab">HOME</a>
           <a href="/connie" class="nav-tab">CONNIE</a>
           <a href="/depo" class="nav-tab depo">DEPO</a>
+                  <a href="/images" class="nav-tab img">IMAGES</a>
         </nav>
         <div class="badge">CONNIE NOLA : VOICE FOUNDRY</div>
     </header>
@@ -3131,6 +3138,7 @@ class GCPConfigRequest(BaseModel):
     project_id: str
     region: str = "us-central1"
     zone: str = "us-central1-a"
+    gpu_endpoint: str = ""   # e.g. http://<gce-external-ip>:8001/v1 — inference server on the GPU box
 
 @app.get("/api/ide/gcp/status")
 async def ide_gcp_status():
@@ -3139,12 +3147,13 @@ async def ide_gcp_status():
     return {"configured": bool(cfg.get("project_id")),
             "project_id": cfg.get("project_id",""),
             "region": cfg.get("region","us-central1"),
-            "has_credentials": has_creds}
+            "has_credentials": has_creds,
+            "gpu_endpoint": cfg.get("gpu_endpoint","")}
 
 @app.post("/api/ide/gcp/configure")
 async def ide_gcp_configure(req: GCPConfigRequest):
     cfg = _load_gcp_config()
-    cfg.update({"project_id": req.project_id, "region": req.region, "zone": req.zone})
+    cfg.update({"project_id": req.project_id, "region": req.region, "zone": req.zone, "gpu_endpoint": req.gpu_endpoint})
     _save_gcp_config(cfg)
     return {"status": "saved", "project_id": req.project_id}
 
@@ -3166,6 +3175,182 @@ async def ide_shell(req: ShellRequest):
         return {"stdout": "", "stderr": "Command timed out (30s)", "rc": 124}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "rc": 1}
+
+# ── CAT-5 Model Routing Protocol ──────────────────────────────────────────────
+import re as _cat_re
+
+CAT5_RULES = [
+    (1, _cat_re.compile(r'\b(fix typo|rename|comment|format|lint|add import|one line|single function|quick|simple change)\b', _cat_re.I)),
+    (2, _cat_re.compile(r'\b(add button|add field|write test|unit test|helper function|small component|update text|change color|style)\b', _cat_re.I)),
+    (3, _cat_re.compile(r'\b(build page|create endpoint|api route|database schema|refactor|module|class|integration|fetch data|crud|form)\b', _cat_re.I)),
+    (4, _cat_re.compile(r'\b(full feature|auth|authentication|deploy|pipeline|multi.step|architecture|system|real.time|streaming|complex)\b', _cat_re.I)),
+    (5, _cat_re.compile(r'\b(build (the |an |a )?(full |entire |whole |complete )?(app|application|platform|system|product)|autonomous|design pattern|microservice|scalab)\b', _cat_re.I)),
+]
+CAT5_LABEL = {1:"CAT-1 FAST",2:"CAT-2 LIGHT",3:"CAT-3 CORE",4:"CAT-4 HEAVY",5:"CAT-5 TITAN"}
+
+class CatRequest(BaseModel):
+    prompt: str
+
+@app.post("/api/ide/cat")
+async def classify_cat(req: CatRequest):
+    txt = req.prompt
+    cat = 2
+    for level, pattern in reversed(CAT5_RULES):
+        if pattern.search(txt):
+            cat = level
+            break
+    if len(txt) > 400 and cat < 3:
+        cat = 3
+    needs_gpu = cat >= 4
+    return {"cat": cat, "label": CAT5_LABEL[cat], "needs_gpu": needs_gpu}
+
+# ── Local HF model roster (Nobility Vault, no API key required) ─────────────
+LOCAL_MODEL_ROSTER = [
+    {"id": "local:qwen-coder-1.5b", "name": "Qwen2.5 Coder 1.5B (local)", "size": "1.5B",
+     "path": "/mnt/NOBILITY_VAULT/models/qwen-coder-1.5b-local/model.gguf", "cat": 1, "runs_on": "cpu"},
+    {"id": "local:qwen-coder-3b", "name": "Qwen2.5 Coder 3B (local)", "size": "3B",
+     "path": "/mnt/NOBILITY_VAULT/models/qwen-coder-3b-local/qwen2.5-coder-3b-instruct-q4_k_m.gguf", "cat": 2, "runs_on": "cpu"},
+    {"id": "local:qwen-coder-7b", "name": "Qwen2.5 Coder 7B (local)", "size": "7B",
+     "path": "/mnt/NOBILITY_VAULT/models/qwen-coder-7b-local/qwen2.5-coder-7b-instruct-q4_k_m.gguf", "cat": 3, "runs_on": "cpu"},
+    {"id": "local:qwen-coder-14b", "name": "Qwen2.5 Coder 14B (GCP GPU)", "size": "14B",
+     "path": "", "cat": 4, "runs_on": "gpu", "remote_ready": True,
+     "hf_repo": "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"},
+    {"id": "local:qwen3-coder-30b", "name": "Qwen3 Coder 30B-A3B (GPU)", "size": "30B",
+     "path": "/mnt/NOBILITY_VAULT/models/qwen3-coder-30b-gpu", "cat": 4, "runs_on": "gpu",
+     "hf_repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"},
+    {"id": "local:qwen-coder-32b", "name": "Qwen2.5 Coder 32B-AWQ (GPU)", "size": "32B",
+     "path": "/mnt/NOBILITY_VAULT/models/qwen-coder-32b-gpu", "cat": 5, "runs_on": "gpu",
+     "hf_repo": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"},
+]
+
+@app.get("/api/ide/local/status")
+async def local_model_status():
+    cfg = _load_gcp_config()
+    gpu_endpoint = cfg.get("gpu_endpoint", "")
+    out = []
+    for m in LOCAL_MODEL_ROSTER:
+        if m.get("remote_ready"):
+            out.append({**m, "downloaded": True, "size_mb": 0, "gpu_endpoint_set": bool(gpu_endpoint)})
+            continue
+        p = m["path"]
+        present = bool(p) and os.path.exists(p)
+        size_mb = 0
+        if present:
+            try:
+                if os.path.isdir(p):
+                    size_mb = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn) // (1024*1024)
+                else:
+                    size_mb = os.path.getsize(p) // (1024*1024)
+            except Exception:
+                pass
+        out.append({**m, "downloaded": present, "size_mb": size_mb})
+    return {"models": out}
+
+class HFDownloadRequest(BaseModel):
+    repo_id: str
+    filename: str = ""
+    dest: str
+
+@app.post("/api/ide/hf/download")
+async def hf_download(req: HFDownloadRequest):
+    os.makedirs(os.path.dirname(req.dest) if req.filename else req.dest, exist_ok=True)
+    log_path = f"/tmp/hf_dl_{abs(hash(req.repo_id))}.log"
+    if req.filename:
+        py = (f"from huggingface_hub import hf_hub_download; "
+              f"p = hf_hub_download(repo_id='{req.repo_id}', filename='{req.filename}', local_dir='{os.path.dirname(req.dest)}'); "
+              f"print('DONE:', p)")
+    else:
+        py = (f"from huggingface_hub import snapshot_download; "
+              f"p = snapshot_download(repo_id='{req.repo_id}', local_dir='{req.dest}'); "
+              f"print('DONE:', p)")
+    cmd = f"nohup /home/hunt/.local/bin/uv run --with huggingface_hub python3 -c \"{py}\" > {log_path} 2>&1 &"
+    subprocess.Popen(cmd, shell=True)
+    return {"status": "started", "log": log_path}
+
+_LOCAL_LLM_CACHE = {}
+
+class LocalChatRequest(BaseModel):
+    model: str
+    messages: list
+    system: str = ""
+    max_tokens: int = 1024
+    temperature: float = 0.2
+
+@app.post("/api/ide/local/chat")
+async def local_chat(req: LocalChatRequest):
+    entry = next((m for m in LOCAL_MODEL_ROSTER if m["id"] == req.model), None)
+    if not entry:
+        return {"error": f"Unknown local model {req.model}"}
+    if entry.get("remote_ready") and entry["runs_on"] == "gpu":
+        cfg = _load_gcp_config()
+        endpoint = cfg.get("gpu_endpoint", "")
+        if not endpoint:
+            return {"error": f"{entry['name']} is on your GCP GPU box but no endpoint URL is set — enter it in the ☁ GCP panel (e.g. http://<gce-ip>:8001/v1) so CRANE can reach the inference server."}
+        try:
+            chat_msgs = ([{"role": "system", "content": req.system}] if req.system else []) + \
+                        [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in req.messages]
+            resp = _requests.post(f"{endpoint.rstrip('/')}/chat/completions",
+                                   json={"model": entry.get("hf_repo", entry["id"]), "messages": chat_msgs,
+                                         "max_tokens": req.max_tokens, "temperature": req.temperature},
+                                   timeout=60)
+            if resp.status_code != 200:
+                return {"error": f"GPU endpoint returned {resp.status_code}: {resp.text[:300]}"}
+            content = resp.json()["choices"][0]["message"]["content"]
+            return {"content": content, "model": entry["id"], "source": "gcp_gpu"}
+        except Exception as e:
+            return {"error": f"Couldn't reach GPU endpoint ({endpoint}): {e}"}
+    if entry["runs_on"] == "gpu":
+        return {"error": f"{entry['name']} needs the GCP GPU running first — click '🔥 Fire GPU $0.40/hr' in the composer, provision the instance, then retry."}
+    if not entry["path"] or not os.path.exists(entry["path"]):
+        return {"error": f"{entry['name']} isn't downloaded to the vault yet (still fetching in the background)."}
+    try:
+        import llama_cpp
+    except ImportError:
+        return {"error": "llama-cpp-python isn't installed yet on this server — local CPU inference engine is still installing."}
+    try:
+        if entry["id"] not in _LOCAL_LLM_CACHE:
+            _LOCAL_LLM_CACHE.clear()  # keep only one model resident at a time (2-core box, low RAM)
+            _LOCAL_LLM_CACHE[entry["id"]] = llama_cpp.Llama(
+                model_path=entry["path"], n_ctx=4096, n_threads=2, verbose=False)
+        llm = _LOCAL_LLM_CACHE[entry["id"]]
+        chat_msgs = []
+        if req.system:
+            chat_msgs.append({"role": "system", "content": req.system})
+        for m in req.messages:
+            chat_msgs.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+        out = llm.create_chat_completion(messages=chat_msgs, max_tokens=min(req.max_tokens, 1536), temperature=req.temperature)
+        content = out["choices"][0]["message"]["content"]
+        return {"content": content, "model": entry["id"], "source": "local_vault"}
+    except Exception as e:
+        return {"error": f"Local inference failed: {e}"}
+
+@app.get("/api/ide/hf/download/status")
+async def hf_download_status(log: str):
+    if not os.path.exists(log):
+        return {"done": False, "log_text": ""}
+    txt = open(log).read()
+    return {"done": "DONE:" in txt or "Error" in txt, "log_text": txt[-2000:]}
+
+# ── GCP GPU spin-up (on-demand, $0.40/hr class instance) ─────────────────────
+class GPUSpinRequest(BaseModel):
+    model_id: str = ""
+
+@app.post("/api/ide/gcp/spin")
+async def gcp_spin(req: GPUSpinRequest):
+    cfg = _load_gcp_config()
+    if not cfg.get("project_id"):
+        return {"status": "error", "error": "Configure GCP project first (☁ GCP button)."}
+    return {
+        "status": "confirm_required",
+        "message": f"This will provision a billable GPU instance (~$0.40/hr, {cfg.get('zone','us-central1-a')}) "
+                    f"to serve {req.model_id or 'the selected model'}. Confirm in the GCP console or run the "
+                    f"provisioning command shown, then CRANE will route CAT-4/5 tasks to it.",
+        "gcloud_cmd": (f"gcloud compute instances create crane-gpu-worker "
+                       f"--project={cfg.get('project_id')} --zone={cfg.get('zone','us-central1-a')} "
+                       f"--machine-type=g2-standard-4 --accelerator=type=nvidia-l4,count=1 "
+                       f"--image-family=common-cu124-debian-11 --image-project=deeplearning-platform-release "
+                       f"--maintenance-policy=TERMINATE --boot-disk-size=100GB --metadata=install-nvidia-driver=True")
+    }
 
 # ── IDE Landing Page ──────────────────────────────────────────────────────────
 
@@ -3252,6 +3437,9 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
 /* ── CHAT LOG ── */
 #chatLog{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;}
+#welcomeHero{padding:32px 18px 20px;text-align:center;flex-shrink:0;}
+#welcomeHero .wh-title{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:22px;letter-spacing:.5px;background:linear-gradient(90deg,#38bdf8,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+#welcomeHero .wh-sub{margin-top:6px;font-size:12px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;font-weight:600;}
 .msg{border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.6;}
 .msg.user{background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);align-self:flex-end;max-width:90%;}
 .msg.agent{background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.18);align-self:flex-start;max-width:100%;}
@@ -3317,12 +3505,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .model-opt .mo-size{font-size:9px;color:var(--muted);min-width:32px;}
 .model-opt .mo-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .mo-tag{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;flex-shrink:0;}
+.mo-cat{font-size:8px;padding:1px 4px;border-radius:3px;border:1px solid;flex-shrink:0;font-family:'JetBrains Mono',monospace;}
+#catBadge{font-size:10px;padding:3px 9px;border-radius:12px;font-weight:700;letter-spacing:.5px;font-family:'JetBrains Mono',monospace;border:1px solid;display:none;}
+#gpuSpinBtn{display:none;font-size:10px;background:rgba(239,68,68,.15);border:1px solid #ef4444;color:#ef4444;padding:2px 8px;border-radius:10px;cursor:pointer;}
 .tag-code{background:rgba(56,189,248,.15);color:var(--blue);}
 .tag-nvidia{background:rgba(118,185,0,.15);color:var(--nvidia);}
 .tag-diff{background:rgba(168,85,247,.15);color:var(--purple);}
 .tag-voice{background:rgba(16,185,129,.15);color:var(--green);}
 .tag-fast{background:rgba(245,158,11,.15);color:var(--gold);}
 .tag-large{background:rgba(239,68,68,.15);color:var(--red);}
+.tag-local{background:rgba(16,185,129,.15);color:var(--green);}
+.tag-gpu{background:rgba(239,68,68,.18);color:#ef4444;}
 
 #sendBtn{background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;flex-shrink:0;transition:.15s;}
 #sendBtn:hover{opacity:.9;}
@@ -3397,9 +3590,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()">⎇ GitHub</button>
   <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
   <nav class="crane-nav">
-    <a href="/" class="nav-tab">HOME</a>
+    <a href="/ide" class="nav-tab active">HOME</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
+      <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
   <button id="voiceBtn" onclick="window.location='/'">🎙 BIG Q</button>
@@ -3446,6 +3640,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <span class="ah-model-chip" id="agentModelChip">select model</span>
     </div>
     <div id="chatLog">
+      <div id="welcomeHero">
+        <div class="wh-title">KICK ASS TODAY TJ</div>
+        <div class="wh-sub">GET SHIT DONE</div>
+      </div>
       <div class="msg sys">CRANE IDE is live. Select your model, open your repo, and let's build.</div>
     </div>
 
@@ -3466,6 +3664,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
           <div class="mode-sep"></div>
           <button class="mode-btn superman" id="modeSuper" onclick="setMode('superman')">⚡ Superman</button>
         </div>
+        <span id="catBadge">CAT-?</span>
+        <button id="gpuSpinBtn" onclick="requestGpuSpin()">🔥 Fire GPU $0.40/hr</button>
       </div>
       <div id="modeHint">Auto: acts autonomously, pauses before destructive changes</div>
 
@@ -3473,7 +3673,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <div id="composerCtxPills"></div>
 
       <!-- Textarea -->
-      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Enter sends, Shift+Enter newline)" onkeydown="chatKey(event)" oninput="updateTokenEst()"></textarea>
+      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Enter sends, Shift+Enter newline)" onkeydown="chatKey(event)" oninput="updateTokenEst();classifyPrompt(this.value)"></textarea>
 
       <!-- Bottom toolbar -->
       <div id="composerToolbar">
@@ -3588,6 +3788,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
         </select>
       </div>
     </div>
+    <div>
+      <div class="modal-label">GPU Inference Endpoint (Qwen 14B already on your GCE box)</div>
+      <input id="gcpGpuEndpoint" type="text" placeholder="http://<gce-external-ip>:8001/v1">
+    </div>
     <div class="modal-hint">Set GOOGLE_APPLICATION_CREDENTIALS to your service account JSON path. NGC enterprise GPU types: A100 80GB · H100 · L4 · T4.</div>
     <div class="modal-row">
       <button class="modal-btn" onclick="saveGCP()">Save Config</button>
@@ -3600,6 +3804,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 <script>
 // ── MODEL CATALOG ──────────────────────────────────────────────────────────
 const MODEL_CATALOG = {
+  local: [
+    {id:'local:deepseek-coder-1.3b', name:'DeepSeek Coder 1.3B (vault)', size:'1.3B', tag:'local', cat:1},
+    {id:'local:qwen-coder-1.5b',     name:'Qwen2.5 Coder 1.5B (vault)',  size:'1.5B', tag:'local', cat:1},
+    {id:'local:codegemma-2b',        name:'CodeGemma 2B (vault)',        size:'2B',   tag:'local', cat:2},
+    {id:'local:qwen-coder-3b',       name:'Qwen2.5 Coder 3B (vault)',    size:'3B',   tag:'local', cat:2},
+    {id:'local:starcoder2-3b',       name:'StarCoder2 3B (vault)',       size:'3B',   tag:'local', cat:2},
+    {id:'local:qwen-coder-7b',       name:'Qwen2.5 Coder 7B (vault)',    size:'7B',   tag:'local', cat:3},
+    {id:'local:qwen-coder-14b',      name:'Qwen2.5 Coder 14B (GCP GPU)', size:'14B',  tag:'gpu',   cat:4},
+    {id:'local:qwen3-coder-30b',     name:'Qwen3 Coder 30B-A3B (GPU)',   size:'30B',  tag:'gpu',   cat:4},
+    {id:'local:qwen-coder-32b',      name:'Qwen2.5 Coder 32B-AWQ (GPU)', size:'32B',  tag:'gpu',   cat:5},
+  ],
   coding: [
     {id:'microsoft/phi-3-mini-4k-instruct',    name:'Phi-3 Mini 4K',          size:'3.8B', tag:'fast'},
     {id:'microsoft/phi-3-medium-128k-instruct',name:'Phi-3 Medium 128K',       size:'14B',  tag:'fast'},
@@ -3634,7 +3849,9 @@ const MODEL_CATALOG = {
   ],
 };
 
-const TAG_LABELS = {code:'CODE',fast:'FAST',nvidia:'NVIDIA',large:'LARGE',diff:'DIFFUSION',voice:'VOICE'};
+const TAG_LABELS = {code:'CODE',fast:'FAST',nvidia:'NVIDIA',large:'LARGE',diff:'DIFFUSION',voice:'VOICE',local:'VAULT',gpu:'GPU'};
+const CAT_COLORS = ['','#10b981','#38bdf8','#a855f7','#f59e0b','#ef4444'];
+let _localStatus = {};
 
 // ── STATE ──────────────────────────────────────────────────────────────────
 let _editor = null;
@@ -3676,6 +3893,7 @@ function buildModelMenu() {
   menu.innerHTML = '';
 
   const sections = [
+    {key:'local',    label:'LOCAL VAULT — NO API KEY (CAT 1-5)', cls:'coding'},
     {key:'coding',   label:'CODING MODELS — SMALL → LARGE', cls:'coding'},
     {key:'diffusion',label:'DIFFUSION MODELS',               cls:'diffusion'},
     {key:'voice',    label:'VOICE MODELS',                   cls:'voice'},
@@ -3692,8 +3910,14 @@ function buildModelMenu() {
       row.dataset.id = m.id;
       row.dataset.tag = m.tag;
       const tagCls = `mo-tag tag-${m.tag}`;
-      row.innerHTML = `<span class="mo-size">${m.size}</span><span class="mo-name">${m.name}</span><span class="${tagCls}">${TAG_LABELS[m.tag]||m.tag.toUpperCase()}</span>`;
-      row.onclick = () => selectModel(m.id, m.tag, m.name);
+      let statusDot = '';
+      if (m.tag === 'local' || m.tag === 'gpu') {
+        const ready = m.tag === 'gpu' ? false : (_localStatus[m.id] && _localStatus[m.id].downloaded);
+        statusDot = `<span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:${ready?'#10b981':m.tag==='gpu'?'#f59e0b':'#475569'}" title="${m.tag==='gpu'?'spins up on demand':ready?'downloaded':'downloading…'}"></span>`;
+      }
+      const catDot = m.cat ? `<span class="mo-cat" style="color:${CAT_COLORS[m.cat]};border-color:${CAT_COLORS[m.cat]}">C${m.cat}</span>` : '';
+      row.innerHTML = `${statusDot}<span class="mo-size">${m.size}</span><span class="mo-name">${m.name}</span>${catDot}<span class="${tagCls}">${TAG_LABELS[m.tag]||m.tag.toUpperCase()}</span>`;
+      row.onclick = () => selectModel(m.id, m.tag, m.name, m.cat);
       menu.appendChild(row);
     });
   });
@@ -3704,8 +3928,9 @@ function toggleModelMenu() {
   document.getElementById('modelMenu').classList.toggle('open', _modelMenuOpen);
 }
 
-function selectModel(id, tag, name) {
+function selectModel(id, tag, name, cat, isAuto) {
   _model = id; _modelTag = tag;
+  if (!isAuto) _manualModelPick = true;
   document.getElementById('mdName').textContent = name;
   document.getElementById('modelMenu').querySelectorAll('.model-opt').forEach(r => {
     r.classList.toggle('selected', r.dataset.id === id);
@@ -3716,6 +3941,7 @@ function selectModel(id, tag, name) {
   document.getElementById('agentModelChip').textContent = name.slice(0,24);
   _modelMenuOpen = false;
   document.getElementById('modelMenu').classList.remove('open');
+  if (isAuto) appendMsg('sys', `CAT-${cat} → auto-routed to ${name}`);
 }
 
 // Close menu on outside click
@@ -3760,6 +3986,50 @@ function setMode(m) {
     btn.classList.toggle('active', k === m);
   });
   document.getElementById('modeHint').textContent = MODE_HINTS[m];
+}
+
+// ── CAT-5 MODEL ROUTING PROTOCOL ─────────────────────────────────────────────
+const CAT5_AUTO_ROUTE = {1:'local:deepseek-coder-1.3b',2:'local:qwen-coder-3b',3:'local:qwen-coder-7b',4:'local:qwen-coder-14b',5:'local:qwen-coder-32b'};
+const CAT5_LABEL = {1:'CAT-1 FAST',2:'CAT-2 LIGHT',3:'CAT-3 CORE',4:'CAT-4 HEAVY',5:'CAT-5 TITAN'};
+let _catDebounce = null;
+async function classifyPrompt(txt) {
+  clearTimeout(_catDebounce);
+  if (!txt || txt.trim().length < 10) { document.getElementById('catBadge').style.display='none'; document.getElementById('gpuSpinBtn').style.display='none'; return; }
+  _catDebounce = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/ide/cat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt: txt})});
+      const d = await r.json();
+      const badge = document.getElementById('catBadge');
+      const col = CAT_COLORS[d.cat];
+      badge.textContent = d.label; badge.style.color = col; badge.style.borderColor = col; badge.style.background = col+'22'; badge.style.display = 'inline-block';
+      document.getElementById('gpuSpinBtn').style.display = d.needs_gpu ? 'inline-block' : 'none';
+      // auto-route to the right local model for this CAT level unless user already picked something manually this session
+      if (!_manualModelPick) {
+        const target = CAT5_AUTO_ROUTE[d.cat];
+        const all = [...MODEL_CATALOG.local];
+        const found = all.find(x => x.id === target);
+        if (found && found.id !== _model) selectModel(found.id, found.tag, found.name, found.cat, true);
+      }
+    } catch(e) {}
+  }, 500);
+}
+
+let _manualModelPick = false;
+async function requestGpuSpin() {
+  const r = await fetch('/api/ide/gcp/spin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model_id:_model})});
+  const d = await r.json();
+  if (d.status === 'error') { appendMsg('sys', '⚠ '+d.error); return; }
+  appendMsg('sys', `🔥 GPU provisioning ready.\n${d.message}\n\n[FILE:gcloud_command.sh]`);
+  window._gcloudCmd = d.gcloud_cmd;
+}
+
+async function loadLocalModelStatus() {
+  try {
+    const r = await fetch('/api/ide/local/status');
+    const d = await r.json();
+    (d.models||[]).forEach(m => { _localStatus[m.id] = m; });
+    buildModelMenu();
+  } catch(e) {}
 }
 
 // ── CONTEXT TOOLS ──────────────────────────────────────────────────────────
@@ -3890,6 +4160,7 @@ function openGCPModal() {
   document.getElementById('gcpModal').style.display='flex';
   fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{
     if(d.project_id) document.getElementById('gcpProject').value=d.project_id;
+    if(d.gpu_endpoint) document.getElementById('gcpGpuEndpoint').value=d.gpu_endpoint;
   });
 }
 function closeModal(id) { document.getElementById(id).style.display='none'; }
@@ -4013,9 +4284,10 @@ async function saveGCP(){
   const project=document.getElementById('gcpProject').value.trim();
   const region=document.getElementById('gcpRegion').value;
   const zone=document.getElementById('gcpZone').value;
+  const gpu_endpoint=document.getElementById('gcpGpuEndpoint').value.trim();
   if(!project) return;
   const r=await fetch('/api/ide/gcp/configure',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({project_id:project,region,zone})});
+    body:JSON.stringify({project_id:project,region,zone,gpu_endpoint})});
   const d=await r.json();
   const msg=document.getElementById('gcpMsg'); msg.style.display='block';
   if(d.status==='saved'){
@@ -4061,6 +4333,7 @@ async function sendChat(){
   const inp=document.getElementById('chatInput');
   const userText=inp.value.trim(); if(!userText) return;
   inp.value=''; updateTokenEst();
+  document.getElementById('welcomeHero')?.remove();
 
   let fullPrompt=userText;
   if(_ctx.code&&_editor){ const sel=_editor.getSelection()||_editor.getValue().slice(0,8000); fullPrompt+='\n\n```\n'+sel+'\n```'; }
@@ -4088,7 +4361,9 @@ async function sendChat(){
       _mode==='plan'?'Plan mode: ONLY show the plan. Do not execute. Wait for the user to say "go" or "approved".':
       'Auto mode: act autonomously but flag destructive operations before executing.',
     ];
-    const r=await fetch('/api/ide/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    const isLocal = _modelTag==='local' || _modelTag==='gpu';
+    const endpoint = isLocal ? '/api/ide/local/chat' : '/api/ide/chat';
+    const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:_model,messages:_messages.slice(-20),system:sysParts.join(' '),max_tokens:4096,temperature:_mode==='plan'?0.3:0.2})});
     const d=await r.json();
     thinking.remove();
@@ -4113,10 +4388,11 @@ async function sendChat(){
 // ── INIT ───────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded',()=>{
   initEditor();
-  buildModelMenu();
+  loadLocalModelStatus();
   fetchLiveModels();
-  // default model display
-  selectModel('deepseek-ai/deepseek-coder-v2-instruct','code','DeepSeek Coder V2');
+  // default model: local vault model — no API key needed
+  // pinned primary coder per user request — CAT-5 auto-router will not override until user changes it
+  selectModel('local:qwen-coder-1.5b','local','Qwen2.5 Coder 1.5B (vault)',1,false);
   // GCP status
   fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{ if(d.configured){ document.getElementById('tbGCPBtn').className='tb-btn gcp-on'; document.getElementById('tbGCPBtn').textContent='☁ '+d.project_id; }});
   // GH repos
@@ -4152,6 +4428,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab:hover{color:var(--text);background:rgba(255,255,255,.07);}
 .nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
+.nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -4204,9 +4481,10 @@ input[type=range]{flex:1;accent-color:var(--purple);}
 <div id="topbar">
   <span class="logo-c">CONNIE</span>
   <nav class="crane-nav">
-    <a href="/" class="nav-tab">HOME</a>
+    <a href="/ide" class="nav-tab">HOME</a>
     <a href="/connie" class="nav-tab active">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
+      <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -4436,6 +4714,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab:hover{color:var(--text);background:rgba(255,255,255,.07);}
 .nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
+.nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -4489,9 +4768,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 <div id="topbar">
   <span class="logo-d">DEPO</span>
   <nav class="crane-nav">
-    <a href="/" class="nav-tab">HOME</a>
+    <a href="/ide" class="nav-tab">HOME</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo active">DEPO</a>
+      <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -4693,5 +4973,1135 @@ window.addEventListener('DOMContentLoaded', () => { loadVault(); });
 </html>
 """
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# CRANE IMAGES — Diffusion studio (Grok-Imagine style)
+# ═══════════════════════════════════════════════════════════════════════
+
+GEN_IMG_DIR = "/mnt/NOBILITY_VAULT/generated/images"
+GEN_VID_DIR = "/mnt/NOBILITY_VAULT/generated/video"
+
+# Diffusion roster. runs_on is honest: both vault models are CUDA-only on this box.
+#   flux NF4  -> bitsandbytes 4-bit is CUDA-only, cannot run on CPU at all
+#   qwen Q8   -> 21GB weights vs 11.5GB system RAM
+DIFFUSION_ROSTER = [
+    {
+        "id": "diff:flux-uncensored",
+        "name": "FLUX.1-dev Uncensored (NF4)",
+        "family": "flux",
+        "path": "/mnt/NOBILITY_VAULT/models/flux-uncensored",
+        "size_label": "6.3 GB",
+        "runs_on": "gpu",
+        "why_gpu": "NF4 (bitsandbytes 4-bit) is a CUDA-only format — no CPU path exists.",
+        "strength": "Photoreal portraits, skin, lighting — the closest you have to Grok-level realism.",
+        "default": True,
+        "vram_gb": 12,
+        "needs_companions": ["FLUX VAE", "T5-XXL text encoder", "CLIP-L"],
+    },
+    {
+        "id": "diff:qwen-image-2512",
+        "name": "Qwen-Image 2512 (Q8_0)",
+        "family": "qwen-image",
+        "path": "/mnt/NOBILITY_VAULT/models/qwen-image-2512",
+        "size_label": "21 GB",
+        "runs_on": "gpu",
+        "why_gpu": "21 GB of weights against 11.5 GB of system RAM — will not fit locally.",
+        "strength": "Best prompt adherence and by far the best text rendering inside images.",
+        "default": False,
+        "vram_gb": 24,
+        "needs_companions": ["Qwen2.5-VL text encoder", "Qwen-Image VAE"],
+    },
+]
+
+# Video roster. max_frames/fps are the models' native ceilings.
+VIDEO_ROSTER = [
+    {
+        "id": "vid:minimax-h3",
+        "name": "MiniMax-H3 FL2VA Pruned (Q4_K_M)",
+        "hf_repo": "leejet/MiniMax-H3-GGUF",
+        "dest": "/mnt/NOBILITY_VAULT/models/minimax-h3",
+        "check_file": "/mnt/NOBILITY_VAULT/models/minimax-h3/minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+        "files": [
+            "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+        ],
+        "extra_files": [
+            ("Abiray/MiniMax-H3-GGUF", "text_encoders/qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
+            ("Abiray/MiniMax-H3-GGUF", "vae/minimax_h3_video_vae_fp16.safetensors"),
+            ("Abiray/MiniMax-H3-GGUF", "vae/minimax_h3_audio_vae_fp32.safetensors"),
+        ],
+        "size_label": "~32 GB",
+        "fps": 24, "max_frames": 144,
+        "vram_gb": 16,
+        "runtime": "stable-diffusion.cpp (ggml)",
+        "note": "Video WITH synchronized audio. Pruned build from the stable-diffusion.cpp author — 11.4GB instead of 18.8GB. Animates a first frame, so pair it with a FLUX still for text to image to video.",
+        "default": True,
+    },
+    {
+        "id": "vid:ltx-video-13b",
+        "name": "LTX-Video 13B",
+        "hf_repo": "Lightricks/LTX-Video",
+        "dest": "/mnt/NOBILITY_VAULT/models/ltx-video-13b",
+        "size_label": "~28 GB",
+        "fps": 30, "max_frames": 257,
+        "vram_gb": 24,
+        "note": "Longest native clip of the open models and the fastest to sample.",
+        "default": False,
+    },
+    {
+        "id": "vid:cogvideox15-5b",
+        "name": "CogVideoX 1.5-5B",
+        "hf_repo": "THUDM/CogVideoX1.5-5B",
+        "dest": "/mnt/NOBILITY_VAULT/models/cogvideox15-5b",
+        "size_label": "~20 GB",
+        "fps": 16, "max_frames": 161,
+        "vram_gb": 20,
+        "note": "10s native at 16fps — smooth, slower to sample than LTX.",
+        "default": False,
+    },
+    {
+        "id": "vid:wan22-ti2v-5b",
+        "name": "Wan 2.2 TI2V-5B",
+        "hf_repo": "Wan-AI/Wan2.2-TI2V-5B",
+        "dest": "/mnt/NOBILITY_VAULT/models/wan22-ti2v-5b",
+        "size_label": "~17 GB",
+        "fps": 24, "max_frames": 121,
+        "vram_gb": 16,
+        "note": "5s native, strongest motion realism — chain segments to go longer.",
+        "default": False,
+    },
+]
+
+
+def _dir_size_gb(p):
+    if not os.path.exists(p):
+        return 0.0
+    try:
+        if os.path.isfile(p):
+            return round(os.path.getsize(p) / (1024 ** 3), 1)
+        total = sum(os.path.getsize(os.path.join(dp, f))
+                    for dp, _, fn in os.walk(p) for f in fn)
+        return round(total / (1024 ** 3), 1)
+    except Exception:
+        return 0.0
+
+
+@app.get("/api/images/models")
+async def images_models():
+    cfg = _load_gcp_config()
+    endpoint = cfg.get("gpu_endpoint", "")
+    imgs = []
+    for m in DIFFUSION_ROSTER:
+        imgs.append({**m, "downloaded": os.path.exists(m["path"]),
+                     "actual_gb": _dir_size_gb(m["path"])})
+    vids = []
+    for m in VIDEO_ROSTER:
+        # a bare dir isn't proof — check the weight file itself so a half-finished
+        # download doesn't report as ready
+        probe = m.get("check_file") or m["dest"]
+        present = os.path.exists(probe)
+        vids.append({**m, "downloaded": present, "actual_gb": _dir_size_gb(m["dest"]),
+                     "max_seconds": round(m["max_frames"] / m["fps"], 1)})
+    return {"image_models": imgs, "video_models": vids,
+            "gpu_endpoint_set": bool(endpoint), "gpu_endpoint": endpoint}
+
+
+@app.get("/api/images/gallery")
+async def images_gallery():
+    items = []
+    for d, kind in ((GEN_IMG_DIR, "image"), (GEN_VID_DIR, "video")):
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if f.startswith("."):
+                continue
+            fp = os.path.join(d, f)
+            try:
+                items.append({"name": f, "kind": kind,
+                              "size_kb": os.path.getsize(fp) // 1024,
+                              "mtime": os.path.getmtime(fp)})
+            except Exception:
+                pass
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return {"items": items}
+
+
+@app.get("/api/images/file/{kind}/{name}")
+async def images_file(kind: str, name: str):
+    from fastapi.responses import FileResponse
+    base = GEN_IMG_DIR if kind == "image" else GEN_VID_DIR
+    safe = os.path.basename(name)
+    fp = os.path.join(base, safe)
+    if not os.path.exists(fp):
+        return {"error": "not found"}
+    return FileResponse(fp)
+
+
+# ── GPU cost meter + idle watchdog ───────────────────────────────────────────
+# Tracks GCP GPU wall-clock, bills it at a configurable hourly rate, and shuts
+# the instance down after a stretch of no activity so an idle box stops burning
+# the $300 credit.
+GPU_METER_FILE = os.path.expanduser("~/.crane_gpu_meter.json")
+GPU_IDLE_TIMEOUT_S = 600          # 10 minutes
+GPU_DEFAULT_RATE = 0.40           # $/hour
+
+
+def _meter_load():
+    if os.path.exists(GPU_METER_FILE):
+        try:
+            with open(GPU_METER_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"running": False, "started_at": None, "last_activity": None,
+            "rate": GPU_DEFAULT_RATE, "total_cost": 0.0, "total_seconds": 0.0,
+            "sessions": [], "auto_off": True}
+
+
+def _meter_save(m):
+    with open(GPU_METER_FILE, "w") as f:
+        json.dump(m, f, indent=2)
+
+
+def _meter_state(m=None):
+    """Derive the live view without mutating stored state."""
+    m = m or _meter_load()
+    now = time.time()
+    elapsed = 0.0
+    session_cost = 0.0
+    idle = 0.0
+    if m.get("running") and m.get("started_at"):
+        elapsed = now - m["started_at"]
+        session_cost = (elapsed / 3600.0) * m.get("rate", GPU_DEFAULT_RATE)
+        idle = now - (m.get("last_activity") or m["started_at"])
+    return {
+        "running": bool(m.get("running")),
+        "rate": m.get("rate", GPU_DEFAULT_RATE),
+        "elapsed_seconds": round(elapsed, 1),
+        "session_cost": round(session_cost, 4),
+        "total_cost": round(m.get("total_cost", 0.0) + session_cost, 4),
+        "lifetime_cost": round(m.get("total_cost", 0.0), 4),
+        "total_seconds": round(m.get("total_seconds", 0.0) + elapsed, 1),
+        "idle_seconds": round(idle, 1),
+        "idle_timeout": GPU_IDLE_TIMEOUT_S,
+        "auto_off_in": round(max(0, GPU_IDLE_TIMEOUT_S - idle), 1) if m.get("running") else None,
+        "auto_off": m.get("auto_off", True),
+        "session_count": len(m.get("sessions", [])),
+    }
+
+
+class MeterStartRequest(BaseModel):
+    rate: float = GPU_DEFAULT_RATE
+    note: str = ""
+
+
+@app.post("/api/gpu/start")
+async def gpu_meter_start(req: MeterStartRequest):
+    m = _meter_load()
+    if m.get("running"):
+        return {"status": "already_running", **_meter_state(m)}
+    now = time.time()
+    m.update({"running": True, "started_at": now, "last_activity": now,
+              "rate": req.rate or GPU_DEFAULT_RATE})
+    _meter_save(m)
+    return {"status": "started", **_meter_state(m)}
+
+
+@app.post("/api/gpu/stop")
+async def gpu_meter_stop(shutdown: bool = False):
+    m = _meter_load()
+    if not m.get("running"):
+        return {"status": "not_running", **_meter_state(m)}
+    now = time.time()
+    elapsed = now - m["started_at"]
+    cost = (elapsed / 3600.0) * m.get("rate", GPU_DEFAULT_RATE)
+    m["sessions"] = (m.get("sessions", []) + [{
+        "started_at": m["started_at"], "ended_at": now,
+        "seconds": round(elapsed, 1), "cost": round(cost, 4),
+    }])[-50:]
+    m["total_cost"] = round(m.get("total_cost", 0.0) + cost, 4)
+    m["total_seconds"] = round(m.get("total_seconds", 0.0) + elapsed, 1)
+    m.update({"running": False, "started_at": None, "last_activity": None})
+    _meter_save(m)
+    result = {"status": "stopped", "session_cost": round(cost, 4), **_meter_state(m)}
+    if shutdown:
+        result["shutdown"] = _gpu_instance_stop()
+    return result
+
+
+@app.post("/api/gpu/ping")
+async def gpu_meter_ping():
+    """Activity heartbeat — resets the idle countdown."""
+    m = _meter_load()
+    if m.get("running"):
+        m["last_activity"] = time.time()
+        _meter_save(m)
+    return _meter_state(m)
+
+
+@app.get("/api/gpu/meter")
+async def gpu_meter_get():
+    m = _meter_load()
+    st = _meter_state(m)
+    # enforce the idle timeout on read, so the meter self-heals even if the
+    # background watcher is not running
+    if st["running"] and m.get("auto_off", True) and st["idle_seconds"] >= GPU_IDLE_TIMEOUT_S:
+        stopped = await gpu_meter_stop(shutdown=True)
+        stopped["auto_stopped"] = True
+        stopped["reason"] = f"idle {int(st['idle_seconds'])}s >= {GPU_IDLE_TIMEOUT_S}s"
+        return stopped
+    return st
+
+
+class MeterConfigRequest(BaseModel):
+    rate: float = None
+    auto_off: bool = None
+    reset_total: bool = False
+
+
+@app.post("/api/gpu/meter/config")
+async def gpu_meter_config(req: MeterConfigRequest):
+    m = _meter_load()
+    if req.rate is not None:
+        m["rate"] = req.rate
+    if req.auto_off is not None:
+        m["auto_off"] = req.auto_off
+    if req.reset_total:
+        m["total_cost"] = 0.0
+        m["total_seconds"] = 0.0
+        m["sessions"] = []
+    _meter_save(m)
+    return _meter_state(m)
+
+
+def _gpu_instance_stop():
+    """Best-effort: stop (not delete) the GCE box so the disk survives."""
+    cfg = _load_gcp_config()
+    name = cfg.get("instance_name", "crane-diffusion-gpu")
+    project, zone = cfg.get("project_id"), cfg.get("zone", "us-central1-a")
+    if not project:
+        return {"ok": False, "detail": "No GCP project configured — meter stopped, instance untouched."}
+    cmd = (f"gcloud compute instances stop {name} --project={project} --zone={zone} --quiet")
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=90)
+        return {"ok": r.returncode == 0, "cmd": cmd,
+                "detail": (r.stderr or r.stdout or "")[-300:]}
+    except Exception as e:
+        return {"ok": False, "cmd": cmd, "detail": str(e)}
+
+
+# ── HF ZeroGPU (free with a PRO membership) ──────────────────────────────────
+# Calls a ZeroGPU Space through gradio_client using the vault's HF token.
+# The token is read server-side and never returned to the browser.
+ZEROGPU_SPACES = {
+    "image": {"space": "black-forest-labs/FLUX.1-dev", "api": "/infer",
+              "label": "FLUX.1-dev on ZeroGPU"},
+    "video": {"space": "multimodalart/minimax-h3", "api": "/generate",
+              "label": "MiniMax-H3 on ZeroGPU"},
+}
+ZEROGPU_CONFIG_FILE = os.path.expanduser("~/.crane_zerogpu.json")
+
+
+def _zerogpu_cfg():
+    cfg = dict(ZEROGPU_SPACES)
+    if os.path.exists(ZEROGPU_CONFIG_FILE):
+        try:
+            with open(ZEROGPU_CONFIG_FILE) as f:
+                for k, v in json.load(f).items():
+                    if k in cfg and isinstance(v, dict):
+                        cfg[k].update(v)
+        except Exception:
+            pass
+    return cfg
+
+
+@app.get("/api/images/zerogpu/status")
+async def zerogpu_status():
+    token = _vault_get("HF_TOKEN")
+    return {"token_present": bool(token), "spaces": _zerogpu_cfg()}
+
+
+class ZeroGpuConfigRequest(BaseModel):
+    mode: str
+    space: str
+    api: str = "/infer"
+
+
+@app.post("/api/images/zerogpu/config")
+async def zerogpu_config(req: ZeroGpuConfigRequest):
+    stored = {}
+    if os.path.exists(ZEROGPU_CONFIG_FILE):
+        try:
+            stored = json.load(open(ZEROGPU_CONFIG_FILE))
+        except Exception:
+            pass
+    stored[req.mode] = {"space": req.space, "api": req.api,
+                        "label": f"{req.space} on ZeroGPU"}
+    with open(ZEROGPU_CONFIG_FILE, "w") as f:
+        json.dump(stored, f, indent=2)
+    return {"status": "saved", "spaces": _zerogpu_cfg()}
+
+
+class ZeroGpuRequest(BaseModel):
+    prompt: str
+    mode: str = "image"
+    aspect: str = "2:3"
+    steps: int = 28
+
+
+@app.post("/api/images/zerogpu/generate")
+async def zerogpu_generate(req: ZeroGpuRequest):
+    token = _vault_get("HF_TOKEN")
+    if not token:
+        return {"error": "No HF_TOKEN in the vault — ZeroGPU needs it to spend your PRO quota."}
+    cfg = _zerogpu_cfg().get(req.mode)
+    if not cfg:
+        return {"error": f"No ZeroGPU space configured for {req.mode}."}
+    try:
+        from gradio_client import Client
+    except ImportError:
+        return {"error": "gradio_client isn't installed on the server."}
+
+    w, h = ASPECT_DIMS.get(req.aspect, (832, 1248))
+    try:
+        client = Client(cfg["space"], hf_token=token)
+        try:
+            out = client.predict(prompt=req.prompt, width=w, height=h,
+                                 num_inference_steps=req.steps, api_name=cfg.get("api", "/infer"))
+        except TypeError:
+            # Spaces differ in signature — fall back to positional
+            out = client.predict(req.prompt, api_name=cfg.get("api", "/infer"))
+
+        src = out[0] if isinstance(out, (list, tuple)) and out else out
+        if isinstance(src, dict):
+            src = src.get("video") or src.get("path") or src.get("url")
+        if not isinstance(src, str) or not os.path.exists(src):
+            return {"error": f"ZeroGPU returned an unexpected payload: {str(out)[:200]}"}
+
+        ext = "png" if req.mode == "image" else "mp4"
+        out_dir = GEN_IMG_DIR if req.mode == "image" else GEN_VID_DIR
+        fname = f"{int(time.time())}_zgpu_{re.sub(r'[^a-zA-Z0-9]+', '_', req.prompt)[:36]}.{ext}"
+        import shutil
+        shutil.copyfile(src, os.path.join(out_dir, fname))
+        return {"status": "ok", "name": fname, "kind": req.mode,
+                "provider": "zerogpu", "space": cfg["space"], "cost": 0.0}
+    except Exception as e:
+        return {"error": f"ZeroGPU call failed ({cfg['space']}): {e}"}
+
+
+class GenerateRequest(BaseModel):
+    prompt: str
+    model: str
+    mode: str = "image"          # image | video
+    aspect: str = "2:3"
+    quality: str = "speed"       # speed | quality
+    steps: int = 0               # 0 = pick from quality
+    seconds: float = 0           # video only, 0 = max for model
+    segments: int = 1            # video chaining beyond native cap
+
+
+ASPECT_DIMS = {
+    "1:1":  (1024, 1024),
+    "2:3":  (832, 1248),
+    "3:2":  (1248, 832),
+    "9:16": (768, 1360),
+    "16:9": (1360, 768),
+}
+
+
+@app.post("/api/images/generate")
+async def images_generate(req: GenerateRequest):
+    cfg = _load_gcp_config()
+    endpoint = cfg.get("gpu_endpoint", "")
+
+    roster = DIFFUSION_ROSTER if req.mode == "image" else VIDEO_ROSTER
+    entry = next((m for m in roster if m["id"] == req.model), None)
+    if not entry:
+        return {"error": f"Unknown model {req.model}"}
+
+    if req.mode == "video" and not os.path.exists(entry.get("dest", "")):
+        return {"error": f"{entry['name']} isn't in the vault yet. Use 'Fetch to vault' on the model "
+                         f"to download it ({entry['size_label']}) before generating."}
+    if req.mode == "image" and not os.path.exists(entry.get("path", "")):
+        return {"error": f"{entry['name']} isn't in the vault."}
+
+    if not endpoint:
+        return {
+            "error": "no_gpu",
+            "detail": f"{entry['name']} is GPU-only — {entry.get('why_gpu', 'needs CUDA')} "
+                      f"No GPU endpoint is configured yet.",
+            "vram_gb": entry.get("vram_gb", 24),
+            "gcloud_cmd": _gpu_provision_cmd(cfg, entry.get("vram_gb", 24)),
+        }
+
+    w, h = ASPECT_DIMS.get(req.aspect, (832, 1248))
+    steps = req.steps or (20 if req.quality == "speed" else 40)
+
+    payload = {"prompt": req.prompt, "model": entry["id"], "width": w, "height": h, "steps": steps}
+    if req.mode == "video":
+        fps, max_f = entry["fps"], entry["max_frames"]
+        # optimize to the model's native ceiling unless the user asked for less
+        want_s = req.seconds or round(max_f / fps, 1)
+        frames = min(int(want_s * fps), max_f)
+        payload.update({"frames": frames, "fps": fps, "segments": max(1, req.segments)})
+
+    try:
+        resp = _requests.post(f"{endpoint.rstrip('/')}/generate", json=payload, timeout=600)
+        if resp.status_code != 200:
+            return {"error": f"GPU worker returned {resp.status_code}: {resp.text[:300]}"}
+        data = resp.json()
+        b64 = data.get("image_b64") or data.get("video_b64")
+        if not b64:
+            return {"error": "GPU worker returned no media."}
+        import base64
+        raw = base64.b64decode(b64)
+        ext = "png" if req.mode == "image" else "mp4"
+        out_dir = GEN_IMG_DIR if req.mode == "image" else GEN_VID_DIR
+        fname = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9]+', '_', req.prompt)[:40]}.{ext}"
+        with open(os.path.join(out_dir, fname), "wb") as fh:
+            fh.write(raw)
+        return {"status": "ok", "name": fname, "kind": req.mode}
+    except Exception as e:
+        return {"error": f"Couldn't reach GPU worker ({endpoint}): {e}"}
+
+
+def _gpu_provision_cmd(cfg, vram_gb=24):
+    project = cfg.get("project_id", "<your-project>")
+    zone = cfg.get("zone", "us-central1-a")
+    # L4 24GB covers every model in the roster and is the cheapest 24GB card on GCE.
+    return (f"gcloud compute instances create crane-diffusion-gpu "
+            f"--project={project} --zone={zone} "
+            f"--machine-type=g2-standard-8 --accelerator=type=nvidia-l4,count=1 "
+            f"--provisioning-model=SPOT --instance-termination-action=DELETE "
+            f"--image-family=common-cu124-debian-11 --image-project=deeplearning-platform-release "
+            f"--maintenance-policy=TERMINATE --boot-disk-size=200GB "
+            f"--metadata=install-nvidia-driver=True")
+
+
+class VideoFetchRequest(BaseModel):
+    model: str
+
+
+@app.post("/api/images/video/fetch")
+async def video_fetch(req: VideoFetchRequest):
+    entry = next((m for m in VIDEO_ROSTER if m["id"] == req.model), None)
+    if not entry:
+        return {"error": "unknown model"}
+    log_path = f"/tmp/vid_dl_{entry['id'].replace(':', '_')}.log"
+    files = entry.get("files")
+    if files:
+        # Named files only — these repos carry every quant, and a whole-repo pull
+        # would drag down hundreds of GB.
+        jobs = ", ".join(repr(f) for f in files)
+        py = (f"from huggingface_hub import hf_hub_download\n"
+              f"for fn in [{jobs}]:\n"
+              f"    print('>>> START', fn, flush=True)\n"
+              f"    hf_hub_download(repo_id={entry['hf_repo']!r}, filename=fn, local_dir={entry['dest']!r})\n"
+              f"    print('>>> DONE', fn, flush=True)\n"
+              f"print('>>> ALL_DONE', flush=True)")
+    else:
+        py = (f"from huggingface_hub import snapshot_download\n"
+              f"p = snapshot_download(repo_id={entry['hf_repo']!r}, local_dir={entry['dest']!r})\n"
+              f"print('>>> ALL_DONE', p)")
+    script = f"/tmp/fetch_{entry['id'].replace(':', '_')}.py"
+    with open(script, "w") as fh:
+        fh.write(py)
+    cmd = (f"nohup /home/hunt/.local/bin/uv run --with huggingface_hub "
+           f"python3 {script} > {log_path} 2>&1 &")
+    subprocess.Popen(cmd, shell=True)
+    return {"status": "started", "log": log_path, "size": entry["size_label"]}
+
+
+@app.get("/api/images/video/fetch/status")
+async def video_fetch_status(model: str = "vid:minimax-h3"):
+    entry = next((m for m in VIDEO_ROSTER if m["id"] == model), None)
+    if not entry:
+        return {"error": "unknown model"}
+    log_path = f"/tmp/vid_dl_{entry['id'].replace(':', '_')}.log"
+    alt = "/tmp/dl_h3.log" if model == "vid:minimax-h3" else None
+    for p in (log_path, alt):
+        if p and os.path.exists(p):
+            txt = open(p).read()
+            return {"on_disk_gb": _dir_size_gb(entry["dest"]),
+                    "target": entry["size_label"],
+                    "done": "ALL_DONE" in txt or "ALL_H3_DONE" in txt,
+                    "tail": txt[-600:]}
+    return {"on_disk_gb": _dir_size_gb(entry["dest"]), "target": entry["size_label"],
+            "done": False, "tail": ""}
+
+
+@app.get("/images", response_class=HTMLResponse)
+async def serve_images():
+    return r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRANE Imagine</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --bg:#070d18;--panel:#0d1627;--card:#111827;--border:#1e3052;
+  --blue:#38bdf8;--purple:#a855f7;--green:#10b981;--gold:#f59e0b;
+  --red:#ef4444;--text:#e2e8f0;--muted:#475569;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* TOPBAR */
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 14px;flex-shrink:0;position:relative;}
+.logo-i{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;letter-spacing:2px;background:linear-gradient(90deg,#a855f7,#38bdf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.crane-nav{position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:2px;background:rgba(0,0,0,.35);border-radius:8px;padding:4px;z-index:10;}
+.nav-tab{color:var(--muted);text-decoration:none;padding:5px 18px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:2px;font-family:'JetBrains Mono',monospace;transition:.15s;}
+.nav-tab:hover{color:var(--text);background:rgba(255,255,255,.07);}
+.nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
+.nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
+.nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
+.nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
+.tb-spacer{flex:1;}
+#gpuPill{display:flex;align-items:center;gap:6px;font-size:10px;font-family:'JetBrains Mono',monospace;border:1px solid var(--border);border-radius:14px;padding:3px 10px;cursor:pointer;}
+#gpuPill:hover{border-color:var(--blue);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0;}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dot.off{background:var(--red);}
+
+/* LAYOUT */
+#wrap{flex:1;display:flex;overflow:hidden;}
+#rail{width:190px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;}
+.rail-item{display:flex;align-items:center;gap:9px;padding:9px 14px;cursor:pointer;font-size:12px;font-weight:500;color:var(--muted);transition:.15s;}
+.rail-item:hover{background:rgba(255,255,255,.04);color:var(--text);}
+.rail-item.active{background:rgba(168,85,247,.14);color:var(--text);border-right:2px solid var(--purple);}
+.rail-head{padding:14px 14px 6px;font-size:9px;letter-spacing:2px;color:var(--muted);font-weight:700;font-family:'JetBrains Mono',monospace;}
+.hist-item{padding:6px 14px;font-size:11px;color:var(--muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'JetBrains Mono',monospace;}
+.hist-item:hover{background:rgba(255,255,255,.04);color:var(--text);}
+
+#stage{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:0 24px 40px;}
+#hero{margin-top:56px;text-align:center;}
+#hero h1{font-size:26px;font-weight:700;letter-spacing:-.3px;}
+#hero p{margin-top:7px;font-size:12px;color:var(--muted);}
+
+/* COMPOSER */
+#composer{width:100%;max-width:780px;margin-top:26px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px 16px 10px;transition:.15s;}
+#composer:focus-within{border-color:rgba(168,85,247,.5);}
+#promptBox{width:100%;background:transparent;border:none;outline:none;color:var(--text);font-size:14px;font-family:'Inter',sans-serif;resize:none;min-height:46px;max-height:180px;line-height:1.6;}
+#promptBox::placeholder{color:var(--muted);}
+#ctrlRow{display:flex;align-items:center;gap:7px;margin-top:8px;flex-wrap:wrap;}
+.seg{display:flex;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:9px;overflow:hidden;flex-shrink:0;}
+.seg button{background:transparent;border:none;color:var(--muted);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;transition:.15s;font-family:'Inter',sans-serif;}
+.seg button:hover{color:var(--text);background:rgba(255,255,255,.05);}
+.seg button.on{background:rgba(56,189,248,.18);color:var(--blue);}
+.chip{background:rgba(0,0,0,.35);border:1px solid var(--border);color:var(--muted);border-radius:9px;padding:6px 11px;font-size:11px;font-weight:600;cursor:pointer;transition:.15s;flex-shrink:0;}
+.chip:hover{border-color:var(--blue);color:var(--text);}
+.icon-btn{width:32px;height:32px;border-radius:9px;border:1px solid var(--border);background:rgba(0,0,0,.35);color:var(--muted);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;transition:.15s;flex-shrink:0;}
+.icon-btn:hover{border-color:var(--blue);color:var(--blue);}
+#goBtn{margin-left:auto;width:36px;height:36px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+#goBtn:disabled{opacity:.35;cursor:default;}
+
+/* model dropdown */
+.drop{position:relative;flex-shrink:0;}
+#modelBtn{display:flex;align-items:center;gap:6px;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:9px;padding:6px 11px;font-size:11px;font-weight:600;cursor:pointer;color:var(--text);font-family:'JetBrains Mono',monospace;}
+#modelBtn:hover{border-color:var(--purple);}
+.menu{position:absolute;bottom:calc(100% + 8px);left:0;min-width:330px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:5px;z-index:400;display:none;box-shadow:0 -10px 34px rgba(0,0,0,.6);}
+.menu.open{display:block;}
+.menu-head{padding:7px 11px 5px;font-size:9px;letter-spacing:2px;color:var(--muted);font-weight:700;font-family:'JetBrains Mono',monospace;}
+.m-opt{padding:8px 11px;border-radius:8px;cursor:pointer;transition:.12s;}
+.m-opt:hover{background:rgba(255,255,255,.05);}
+.m-opt.sel{background:rgba(56,189,248,.1);}
+.m-top{display:flex;align-items:center;gap:7px;}
+.m-name{font-size:12px;font-weight:600;flex:1;}
+.m-badge{font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:.5px;flex-shrink:0;}
+.b-vault{background:rgba(16,185,129,.16);color:var(--green);}
+.b-gpu{background:rgba(239,68,68,.16);color:var(--red);}
+.b-missing{background:rgba(71,85,105,.25);color:var(--muted);}
+.m-why{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.45;}
+.m-fetch{font-size:9px;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:5px;padding:2px 7px;cursor:pointer;margin-top:5px;}
+.m-fetch:hover{border-color:var(--gold);color:var(--gold);}
+
+/* video controls */
+#vidRow{display:none;align-items:center;gap:9px;margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.05);flex-wrap:wrap;}
+#vidRow.show{display:flex;}
+#durSlider{flex:1;min-width:130px;accent-color:var(--purple);}
+.vlab{font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;white-space:nowrap;}
+#segCount{background:rgba(0,0,0,.35);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:4px 7px;font-size:11px;outline:none;}
+
+/* status */
+#statusBar{width:100%;max-width:780px;margin-top:11px;font-size:11px;line-height:1.6;display:none;border-radius:10px;padding:11px 13px;}
+#statusBar.err{display:block;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.28);color:#fca5a5;}
+#statusBar.info{display:block;background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.25);color:var(--blue);}
+#statusBar code{display:block;margin-top:7px;background:rgba(0,0,0,.5);padding:8px 10px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text);white-space:pre-wrap;word-break:break-all;user-select:all;}
+
+/* GALLERY */
+#gallery{width:100%;max-width:1080px;margin-top:34px;}
+.gal-head{display:flex;align-items:center;gap:9px;margin-bottom:13px;}
+.gal-head h2{font-size:13px;font-weight:700;letter-spacing:1px;}
+.gal-count{font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
+#galGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:13px;}
+.card{position:relative;border-radius:13px;overflow:hidden;background:var(--card);border:1px solid var(--border);cursor:pointer;transition:.18s;aspect-ratio:2/3;}
+.card:hover{border-color:rgba(168,85,247,.5);transform:translateY(-2px);}
+.card img,.card video{width:100%;height:100%;object-fit:cover;display:block;}
+.card-lab{position:absolute;left:0;right:0;bottom:0;padding:22px 11px 9px;font-size:11px;font-weight:600;background:linear-gradient(transparent,rgba(0,0,0,.85));}
+.preset{aspect-ratio:2/3;display:flex;flex-direction:column;justify-content:flex-end;padding:13px;background:linear-gradient(150deg,rgba(168,85,247,.13),rgba(56,189,248,.07));}
+.preset .p-ico{font-size:24px;margin-bottom:auto;}
+.preset .p-name{font-size:12px;font-weight:700;}
+.preset .p-desc{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.45;}
+.empty{grid-column:1/-1;text-align:center;padding:40px 20px;color:var(--muted);font-size:12px;}
+
+/* lightbox */
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9000;display:none;align-items:center;justify-content:center;padding:36px;}
+#lightbox.open{display:flex;}
+#lightbox img,#lightbox video{max-width:100%;max-height:100%;border-radius:11px;}
+#lbClose{position:absolute;top:18px;right:22px;font-size:26px;color:var(--muted);cursor:pointer;background:none;border:none;}
+
+/* GPU COST METER — bottom left */
+#meter{position:fixed;left:12px;bottom:12px;z-index:800;width:212px;background:rgba(13,22,39,.96);border:1px solid var(--border);border-radius:12px;padding:10px 11px;backdrop-filter:blur(8px);font-family:'JetBrains Mono',monospace;box-shadow:0 6px 26px rgba(0,0,0,.5);}
+#meter.live{border-color:rgba(16,185,129,.5);}
+#meter.warn{border-color:rgba(245,158,11,.6);}
+.mt-top{display:flex;align-items:center;gap:6px;margin-bottom:8px;}
+.mt-title{font-size:9px;letter-spacing:1.5px;color:var(--muted);font-weight:700;flex:1;}
+.mt-toggle{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:8px;padding:2px 6px;cursor:pointer;font-family:'JetBrains Mono',monospace;}
+.mt-toggle:hover{border-color:var(--blue);color:var(--blue);}
+.mt-row{display:flex;justify-content:space-between;align-items:baseline;font-size:10px;margin-bottom:4px;}
+.mt-k{color:var(--muted);}
+.mt-v{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums;}
+.mt-big{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
+.mt-live{color:var(--green);}
+.mt-idle{color:var(--muted);}
+.mt-bar{height:3px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden;margin-top:7px;}
+.mt-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--gold));width:0%;transition:width 1s linear;}
+.mt-note{font-size:8px;color:var(--muted);margin-top:6px;line-height:1.45;}
+
+/* provider selector */
+.prov-free{background:rgba(16,185,129,.18)!important;color:var(--green)!important;}
+.prov-paid{background:rgba(245,158,11,.18)!important;color:var(--gold)!important;}
+
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="logo-i">CRANE</span>
+  <nav class="crane-nav">
+    <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/connie" class="nav-tab">CONNIE</a>
+    <a href="/depo" class="nav-tab depo">DEPO</a>
+    <a href="/images" class="nav-tab img active">IMAGES</a>
+  </nav>
+  <div class="tb-spacer"></div>
+  <div id="gpuPill" onclick="showGpuHelp()">
+    <span class="dot" id="gpuDot"></span><span id="gpuTxt">GPU offline</span>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="rail">
+    <div class="rail-head">STUDIO</div>
+    <div class="rail-item active" onclick="setRail('imagine',this)"><span>✦</span> Imagine</div>
+    <div class="rail-item" onclick="setRail('library',this)"><span>▦</span> Library</div>
+    <div class="rail-head">RECENT PROMPTS</div>
+    <div id="histList"><div class="hist-item" style="color:var(--muted)">No prompts yet</div></div>
+  </div>
+
+  <div id="stage">
+    <div id="hero">
+      <h1 id="heroTitle">What should we imagine?</h1>
+      <p id="heroSub">FLUX and Qwen-Image, straight out of your Nobility Vault.</p>
+    </div>
+
+    <div id="composer">
+      <textarea id="promptBox" placeholder="Type to imagine…" onkeydown="promptKey(event)"></textarea>
+
+      <div id="ctrlRow">
+        <button class="icon-btn" title="Reference image" onclick="alert('Reference-image input lands once the GPU worker is up.')">+</button>
+
+        <div class="seg">
+          <button id="mImage" class="on" onclick="setMode('image')">🖼 Image</button>
+          <button id="mVideo" onclick="setMode('video')">🎬 Video</button>
+        </div>
+
+        <div class="seg">
+          <button id="qSpeed" class="on" onclick="setQuality('speed')">Speed</button>
+          <button id="qQual" onclick="setQuality('quality')">Quality</button>
+        </div>
+
+        <div class="seg" title="Where this render runs">
+          <button id="pZero" class="on prov-free" onclick="setProvider('zerogpu')">⚡ ZeroGPU · free</button>
+          <button id="pGcp" onclick="setProvider('gcp')">☁ GCP · $0.40/hr</button>
+        </div>
+
+        <button class="chip" id="aspectChip" onclick="cycleAspect()">▭ 2:3</button>
+
+        <div class="drop">
+          <div id="modelBtn" onclick="toggleMenu(event)">
+            <span class="dot" id="modelDot"></span>
+            <span id="modelName">loading…</span>
+            <span style="color:var(--muted);font-size:9px">▾</span>
+          </div>
+          <div class="menu" id="modelMenu"></div>
+        </div>
+
+        <button id="goBtn" onclick="generate()">↑</button>
+      </div>
+
+      <div id="vidRow">
+        <span class="vlab">Length</span>
+        <input type="range" id="durSlider" min="1" max="10" step="0.5" value="8.5" oninput="onDur()">
+        <span class="vlab" id="durLab">8.5s</span>
+        <span class="vlab" style="margin-left:8px">Chain</span>
+        <select id="segCount" onchange="onDur()">
+          <option value="1">1 seg</option><option value="2">2 seg</option>
+          <option value="3">3 seg</option><option value="4">4 seg</option>
+        </select>
+        <span class="vlab" id="totalLab">total 8.5s</span>
+      </div>
+    </div>
+
+    <div id="statusBar"></div>
+
+    <div id="gallery">
+      <div class="gal-head">
+        <h2 id="galTitle">Gallery</h2>
+        <span class="gal-count" id="galCount"></span>
+      </div>
+      <div id="galGrid"></div>
+    </div>
+  </div>
+</div>
+
+<div id="meter">
+  <div class="mt-top">
+    <span class="dot" id="mtDot"></span>
+    <span class="mt-title">GPU METER</span>
+    <button class="mt-toggle" id="mtBtn" onclick="toggleGpu()">START</button>
+  </div>
+  <div class="mt-row">
+    <span class="mt-k">this session</span>
+    <span class="mt-big mt-idle" id="mtCost">$0.0000</span>
+  </div>
+  <div class="mt-row"><span class="mt-k">runtime</span><span class="mt-v" id="mtTime">—</span></div>
+  <div class="mt-row"><span class="mt-k">rate</span><span class="mt-v" id="mtRate">$0.40/hr</span></div>
+  <div class="mt-row" style="border-top:1px solid rgba(255,255,255,.07);padding-top:5px;margin-top:6px;">
+    <span class="mt-k">lifetime</span><span class="mt-v" id="mtTotal">$0.0000</span>
+  </div>
+  <div class="mt-bar"><div class="mt-fill" id="mtFill"></div></div>
+  <div class="mt-note" id="mtNote">Idle auto-off after 10 min.</div>
+</div>
+
+<div id="lightbox" onclick="closeLb(event)">
+  <button id="lbClose" onclick="closeLb(event)">×</button>
+  <div id="lbInner"></div>
+</div>
+
+<script>
+let IMG_MODELS=[], VID_MODELS=[], GPU_SET=false, GPU_CMD='';
+let _mode='image', _quality='speed', _aspect='2:3', _model=null, _menuOpen=false;
+const ASPECTS=['2:3','3:2','1:1','9:16','16:9'];
+const PRESETS=[
+  {ico:'🪞',name:'Reimagine',desc:'Restyle a reference image while keeping the subject.'},
+  {ico:'✂️',name:'BG Removal & Change',desc:'Cut the subject out, drop in a new background.'},
+  {ico:'🔍',name:'Smart Resize',desc:'Outpaint to a new aspect without cropping the subject.'},
+  {ico:'🎨',name:'Photo Edit',desc:'Targeted edits from a plain-language instruction.'},
+];
+
+async function loadModels(){
+  const r=await fetch('/api/images/models'); const d=await r.json();
+  IMG_MODELS=d.image_models||[]; VID_MODELS=d.video_models||[];
+  GPU_SET=d.gpu_endpoint_set;
+  document.getElementById('gpuDot').className='dot '+(GPU_SET?'on':'off');
+  document.getElementById('gpuTxt').textContent=GPU_SET?'GPU ready':'GPU offline';
+  const def=IMG_MODELS.find(m=>m.default)||IMG_MODELS[0];
+  if(def) pickModel(def.id);
+  buildMenu();
+}
+
+function currentRoster(){ return _mode==='image'?IMG_MODELS:VID_MODELS; }
+
+function buildMenu(){
+  const menu=document.getElementById('modelMenu'); menu.innerHTML='';
+  const head=document.createElement('div'); head.className='menu-head';
+  head.textContent=_mode==='image'?'DIFFUSION — IMAGE':'DIFFUSION — VIDEO';
+  menu.appendChild(head);
+  currentRoster().forEach(m=>{
+    const el=document.createElement('div');
+    el.className='m-opt'+(m.id===_model?' sel':'');
+    const badge=!m.downloaded
+      ? '<span class="m-badge b-missing">NOT IN VAULT</span>'
+      : '<span class="m-badge b-vault">VAULT</span><span class="m-badge b-gpu">GPU</span>';
+    const meta=_mode==='image'
+      ? (m.why_gpu||'')+' '+(m.strength||'')
+      : (m.note||'')+` Native max ${m.max_seconds}s at ${m.fps}fps.`;
+    let fetchBtn='';
+    if(!m.downloaded && _mode==='video')
+      fetchBtn=`<button class="m-fetch" onclick="fetchVideo(event,'${m.id}')">⬇ Fetch to vault (${m.size_label})</button>`;
+    el.innerHTML=`<div class="m-top"><span class="m-name">${m.name}</span>${badge}</div>
+                  <div class="m-why">${meta}</div>${fetchBtn}`;
+    el.onclick=(e)=>{ if(e.target.classList.contains('m-fetch'))return; pickModel(m.id); toggleMenu(); };
+    menu.appendChild(el);
+  });
+}
+
+function pickModel(id){
+  _model=id;
+  const m=currentRoster().find(x=>x.id===id); if(!m)return;
+  document.getElementById('modelName').textContent=m.name;
+  document.getElementById('modelDot').className='dot '+(m.downloaded?'on':'off');
+  if(_mode==='video'){
+    const s=document.getElementById('durSlider');
+    s.max=m.max_seconds; s.value=m.max_seconds;   // optimize to the model's ceiling
+    onDur();
+  }
+  buildMenu();
+}
+
+function toggleMenu(e){ if(e)e.stopPropagation(); _menuOpen=!_menuOpen;
+  document.getElementById('modelMenu').classList.toggle('open',_menuOpen); }
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.drop')){_menuOpen=false;document.getElementById('modelMenu').classList.remove('open');}
+});
+
+function setMode(m){
+  _mode=m;
+  document.getElementById('mImage').classList.toggle('on',m==='image');
+  document.getElementById('mVideo').classList.toggle('on',m==='video');
+  document.getElementById('vidRow').classList.toggle('show',m==='video');
+  document.getElementById('heroTitle').textContent=m==='image'?'What should we imagine?':'What should we film?';
+  document.getElementById('heroSub').textContent=m==='image'
+    ? 'FLUX and Qwen-Image, straight out of your Nobility Vault.'
+    : 'Length is auto-set to each model’s native maximum. Chain segments to go past it.';
+  document.getElementById('promptBox').placeholder=m==='image'?'Type to imagine…':'Describe the shot…';
+  const r=currentRoster(); const def=r.find(x=>x.default)||r[0];
+  if(def) pickModel(def.id);
+  buildMenu();
+}
+
+function setQuality(q){ _quality=q;
+  document.getElementById('qSpeed').classList.toggle('on',q==='speed');
+  document.getElementById('qQual').classList.toggle('on',q==='quality'); }
+
+let _provider='zerogpu';
+function setProvider(p){
+  _provider=p;
+  const z=document.getElementById('pZero'), g=document.getElementById('pGcp');
+  z.classList.toggle('on',p==='zerogpu'); z.classList.toggle('prov-free',p==='zerogpu');
+  g.classList.toggle('on',p==='gcp');     g.classList.toggle('prov-paid',p==='gcp');
+  if(p==='gcp' && !_meter.running)
+    setStatus('info','GCP selected — press START on the meter before generating so the cost is tracked.');
+  else if(p==='zerogpu')
+    setStatus('info','ZeroGPU selected — runs on your HF PRO quota at no cost. Vault weights aren’t used here; the Space supplies the model.');
+}
+
+function cycleAspect(){
+  _aspect=ASPECTS[(ASPECTS.indexOf(_aspect)+1)%ASPECTS.length];
+  document.getElementById('aspectChip').textContent='▭ '+_aspect;
+}
+
+function onDur(){
+  const s=parseFloat(document.getElementById('durSlider').value);
+  const segs=parseInt(document.getElementById('segCount').value);
+  document.getElementById('durLab').textContent=s+'s';
+  document.getElementById('totalLab').textContent='total '+(s*segs).toFixed(1)+'s';
+}
+
+function promptKey(e){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();generate();} }
+
+function setStatus(kind,html){
+  const b=document.getElementById('statusBar');
+  b.className=kind; b.innerHTML=html;
+  if(!kind) b.style.display='none';
+}
+
+function showGpuHelp(){
+  if(GPU_SET){ setStatus('info','GPU endpoint is configured. Generations route there.'); return; }
+  setStatus('info','Both of your diffusion models are CUDA-only, so image generation runs on a GPU. '
+    +'Provision one (L4 24GB, spot pricing), start the worker, then paste its URL into the ☁ GPU field on the IDE page.'
+    +(GPU_CMD?'<code>'+GPU_CMD+'</code>':''));
+}
+
+async function fetchVideo(e,id){
+  e.stopPropagation();
+  const r=await fetch('/api/images/video/fetch',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:id})});
+  const d=await r.json();
+  setStatus('info',`Downloading ${id} to the vault (${d.size||''}). This runs in the background — the badge flips to VAULT when it lands.`);
+}
+
+async function generate(){
+  const prompt=document.getElementById('promptBox').value.trim();
+  if(!prompt){ setStatus('err','Write a prompt first.'); return; }
+  if(!_model){ setStatus('err','Pick a model first.'); return; }
+  addHist(prompt);
+  const btn=document.getElementById('goBtn'); btn.disabled=true;
+  setStatus('info','Generating…');
+
+  const body={prompt,model:_model,mode:_mode,aspect:_aspect,quality:_quality};
+  if(_mode==='video'){
+    body.seconds=parseFloat(document.getElementById('durSlider').value);
+    body.segments=parseInt(document.getElementById('segCount').value);
+  }
+  try{
+    let r,d;
+    if(_provider==='zerogpu'){
+      setStatus('info','Running on ZeroGPU (free with HF PRO)…');
+      r=await fetch('/api/images/zerogpu/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({prompt,mode:_mode,aspect:_aspect,steps:_quality==='speed'?20:34})});
+      d=await r.json();
+    } else {
+      if(!_meter.running){
+        await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({rate:0.40})});
+        refreshMeter();
+      }
+      await pingGpu();
+      r=await fetch('/api/images/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)});
+      d=await r.json();
+    }
+    if(d.error==='no_gpu'){
+      GPU_CMD=d.gcloud_cmd||'';
+      setStatus('err',d.detail+'<br><br>Provision a GPU with at least '+d.vram_gb+'GB VRAM, then paste the worker URL into the ☁ GCP panel on the IDE page:'
+        +'<code>'+d.gcloud_cmd+'</code>');
+    } else if(d.error){
+      setStatus('err',d.error);
+    } else {
+      setStatus('info','Done — added to your gallery.');
+      loadGallery();
+    }
+  }catch(err){ setStatus('err',err.message); }
+  btn.disabled=false;
+}
+
+function addHist(p){
+  let h=JSON.parse(localStorage.getItem('crane_img_hist')||'[]');
+  h.unshift(p); h=h.slice(0,14);
+  localStorage.setItem('crane_img_hist',JSON.stringify(h));
+  renderHist();
+}
+function renderHist(){
+  const h=JSON.parse(localStorage.getItem('crane_img_hist')||'[]');
+  const el=document.getElementById('histList');
+  if(!h.length){ el.innerHTML='<div class="hist-item" style="color:var(--muted)">No prompts yet</div>'; return; }
+  el.innerHTML='';
+  h.forEach(p=>{
+    const d=document.createElement('div'); d.className='hist-item'; d.textContent=p; d.title=p;
+    d.onclick=()=>{document.getElementById('promptBox').value=p;};
+    el.appendChild(d);
+  });
+}
+
+async function loadGallery(){
+  const r=await fetch('/api/images/gallery'); const d=await r.json();
+  const grid=document.getElementById('galGrid'); grid.innerHTML='';
+  const items=d.items||[];
+  document.getElementById('galCount').textContent=items.length?items.length+' saved':'';
+  if(!items.length){
+    PRESETS.forEach(p=>{
+      const c=document.createElement('div'); c.className='card preset';
+      c.innerHTML=`<div class="p-ico">${p.ico}</div><div class="p-name">${p.name}</div><div class="p-desc">${p.desc}</div>`;
+      grid.appendChild(c);
+    });
+    const note=document.createElement('div'); note.className='empty';
+    note.textContent='Nothing generated yet — your renders land here and are written to /mnt/NOBILITY_VAULT/generated.';
+    grid.appendChild(note);
+    return;
+  }
+  items.forEach(it=>{
+    const c=document.createElement('div'); c.className='card';
+    const url=`/api/images/file/${it.kind}/${encodeURIComponent(it.name)}`;
+    c.innerHTML=(it.kind==='image'
+      ? `<img src="${url}" loading="lazy">`
+      : `<video src="${url}" muted loop onmouseover="this.play()" onmouseout="this.pause()"></video>`)
+      +`<div class="card-lab">${it.name.replace(/^\d+_/,'').replace(/\.(png|mp4)$/,'').replace(/_/g,' ')}</div>`;
+    c.onclick=()=>openLb(it.kind,url);
+    grid.appendChild(c);
+  });
+}
+
+function openLb(kind,url){
+  document.getElementById('lbInner').innerHTML = kind==='image'
+    ? `<img src="${url}">` : `<video src="${url}" controls autoplay loop></video>`;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLb(e){ if(e.target.id==='lbInner')return;
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lbInner').innerHTML=''; }
+
+function setRail(which,el){
+  document.querySelectorAll('.rail-item').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('galTitle').textContent = which==='library'?'Library':'Gallery';
+}
+
+// ── GPU COST METER ──────────────────────────────────────────────────────────
+let _meter={running:false}, _meterTimer=null;
+
+function fmtDur(s){
+  s=Math.floor(s); const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), x=s%60;
+  return h>0 ? `${h}h ${m}m ${x}s` : m>0 ? `${m}m ${x}s` : `${x}s`;
+}
+
+async function refreshMeter(){
+  try{
+    const r=await fetch('/api/gpu/meter'); const d=await r.json();
+    _meter=d;
+    const box=document.getElementById('meter');
+    const dot=document.getElementById('mtDot');
+    const cost=document.getElementById('mtCost');
+
+    document.getElementById('mtCost').textContent='$'+(d.session_cost||0).toFixed(4);
+    document.getElementById('mtTime').textContent=d.running?fmtDur(d.elapsed_seconds):'—';
+    document.getElementById('mtRate').textContent='$'+(d.rate||0.4).toFixed(2)+'/hr';
+    document.getElementById('mtTotal').textContent='$'+(d.total_cost||0).toFixed(4);
+    document.getElementById('mtBtn').textContent=d.running?'STOP':'START';
+
+    dot.className='dot '+(d.running?'on':'');
+    cost.className='mt-big '+(d.running?'mt-live':'mt-idle');
+
+    if(d.running){
+      const frac=Math.min(1,(d.idle_seconds||0)/(d.idle_timeout||600));
+      document.getElementById('mtFill').style.width=(frac*100)+'%';
+      const left=Math.max(0,d.auto_off_in||0);
+      box.className = left<120 ? 'warn' : 'live';
+      document.getElementById('mtNote').textContent =
+        left<120 ? `⚠ auto-off in ${fmtDur(left)} — no activity`
+                 : `Auto-off in ${fmtDur(left)} if idle.`;
+    } else {
+      box.className='';
+      document.getElementById('mtFill').style.width='0%';
+      document.getElementById('mtNote').textContent =
+        d.auto_stopped ? 'Auto-stopped on idle. Instance stop issued.'
+                       : 'Idle auto-off after 10 min. ZeroGPU renders are free.';
+    }
+    if(d.auto_stopped) setStatus('info','GPU auto-stopped after 10 minutes idle — billing halted.');
+  }catch(e){}
+}
+
+async function toggleGpu(){
+  if(_meter.running){
+    const r=await fetch('/api/gpu/stop?shutdown=true',{method:'POST'});
+    const d=await r.json();
+    setStatus('info',`GPU stopped. This session cost $${(d.session_cost||0).toFixed(4)}.`
+      +(d.shutdown&&!d.shutdown.ok?' (Meter stopped; instance shutdown: '+(d.shutdown.detail||'not issued')+')':''));
+  } else {
+    await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rate:0.40})});
+    setStatus('info','GPU meter started — billing at $0.40/hr. Auto-off after 10 min idle.');
+  }
+  refreshMeter();
+}
+
+// any real interaction counts as activity
+async function pingGpu(){ if(_meter.running){ try{ await fetch('/api/gpu/ping',{method:'POST'}); }catch(e){} } }
+['click','keydown'].forEach(ev=>document.addEventListener(ev,()=>{
+  if(!window._pingThrottle||Date.now()-window._pingThrottle>20000){ window._pingThrottle=Date.now(); pingGpu(); }
+}));
+
+window.addEventListener('DOMContentLoaded',()=>{
+  loadModels(); loadGallery(); renderHist();
+  refreshMeter(); _meterTimer=setInterval(refreshMeter,5000);
+});
+</script>
+</body>
+</html>
+"""
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
