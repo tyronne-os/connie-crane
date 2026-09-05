@@ -1,3 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
+requests
+gradio_client
+aiofiles
+python-multipart

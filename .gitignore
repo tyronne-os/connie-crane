@@ -4,4 +4,14 @@
 # Un-ignore project files
 !app.py
 !voice_engine.py
+!vault.py
+!harvester.py
 !.gitignore
+!README.md
+!VAULT-ACCESS.md
+!requirements.txt
+!gpu_worker.py
+!gpu_worker_requirements.txt
+!run.sh
+!docs/
+!docs/**

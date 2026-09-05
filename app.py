@@ -1064,9 +1064,10 @@ async def serve_ui():
         <div class="logo">🏗️ CRANE STUDIO</div>
         <nav class="crane-nav">
           <a href="/ide" class="nav-tab">HOME</a>
+          <a href="/studio" class="nav-tab active">STUDIO</a>
           <a href="/connie" class="nav-tab">CONNIE</a>
           <a href="/depo" class="nav-tab depo">DEPO</a>
-                  <a href="/images" class="nav-tab img">IMAGES</a>
+          <a href="/images" class="nav-tab img">IMAGES</a>
         </nav>
         <div class="badge">CONNIE NOLA : VOICE FOUNDRY</div>
     </header>
@@ -3591,12 +3592,13 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab active">HOME</a>
+    <a href="/studio" class="nav-tab">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
-      <a href="/images" class="nav-tab img">IMAGES</a>
+    <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
-  <button id="voiceBtn" onclick="window.location='/'">🎙 BIG Q</button>
+  <button id="voiceBtn" onclick="window.location='/studio'">🎙 STUDIO</button>
 </div>
 
 <!-- MAIN -->
@@ -4482,9 +4484,10 @@ input[type=range]{flex:1;accent-color:var(--purple);}
   <span class="logo-c">CONNIE</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab">STUDIO</a>
     <a href="/connie" class="nav-tab active">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
-      <a href="/images" class="nav-tab img">IMAGES</a>
+    <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -4769,9 +4772,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <span class="logo-d">DEPO</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo active">DEPO</a>
-      <a href="/images" class="nav-tab img">IMAGES</a>
+    <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -5293,8 +5297,8 @@ def _gpu_instance_stop():
 # Calls a ZeroGPU Space through gradio_client using the vault's HF token.
 # The token is read server-side and never returned to the browser.
 ZEROGPU_SPACES = {
-    "image": {"space": "black-forest-labs/FLUX.1-dev", "api": "/infer",
-              "label": "FLUX.1-dev on ZeroGPU"},
+    "image": {"space": "black-forest-labs/FLUX.1-schnell", "api": "/infer",
+              "label": "FLUX.1-schnell on ZeroGPU"},
     "video": {"space": "multimodalart/minimax-h3", "api": "/generate",
               "label": "MiniMax-H3 on ZeroGPU"},
 }
@@ -5683,6 +5687,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <span class="logo-i">CRANE</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
     <a href="/images" class="nav-tab img active">IMAGES</a>
@@ -5705,7 +5710,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <div id="stage">
     <div id="hero">
       <h1 id="heroTitle">What should we imagine?</h1>
-      <p id="heroSub">FLUX and Qwen-Image, straight out of your Nobility Vault.</p>
+      <p id="heroSub">FLUX.1-schnell (free ZeroGPU) + vault models on GCP.</p>
     </div>
 
     <div id="composer">
@@ -5725,8 +5730,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
         </div>
 
         <div class="seg" title="Where this render runs">
-          <button id="pZero" class="on prov-free" onclick="setProvider('zerogpu')">⚡ ZeroGPU · free</button>
-          <button id="pGcp" onclick="setProvider('gcp')">☁ GCP · $0.40/hr</button>
+          <button id="pZero" class="on prov-free" onclick="setProvider('zerogpu')">⚡ FLUX-schnell · free</button>
+          <button id="pGcp" onclick="setProvider('gcp')">☁ GCP worker · $0.40/hr</button>
         </div>
 
         <button class="chip" id="aspectChip" onclick="cycleAspect()">▭ 2:3</button>
@@ -5886,8 +5891,8 @@ function setProvider(p){
   g.classList.toggle('on',p==='gcp');     g.classList.toggle('prov-paid',p==='gcp');
   if(p==='gcp' && !_meter.running)
     setStatus('info','GCP selected — press START on the meter before generating so the cost is tracked.');
-  else if(p==='zerogpu')
-    setStatus('info','ZeroGPU selected — runs on your HF PRO quota at no cost. Vault weights aren’t used here; the Space supplies the model.');
+  else if(p===’zerogpu’)
+    setStatus(‘info’,’ZeroGPU — FLUX.1-schnell (Apache 2.0, free). Needs a valid HF token in your vault. Regenerate at huggingface.co/settings/tokens if yours is expired.’);
 }
 
 function cycleAspect(){
