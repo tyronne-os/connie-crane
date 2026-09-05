@@ -1,0 +1,18 @@
+# Credentials — never commit. These live in the NOBILITY DEPOSITORY vault.
+vault.json
+*.env
+.env*
+!.env.example
+secrets/
+backups/
+
+# Runtime state
+crane_cast_manifest.json
+voice_vault/
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
