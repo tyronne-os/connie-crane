@@ -1,18 +1,7 @@
-# Credentials — never commit. These live in the NOBILITY DEPOSITORY vault.
-vault.json
-*.env
-.env*
-!.env.example
-secrets/
-backups/
+# Ignore everything
+/*
 
-# Runtime state
-crane_cast_manifest.json
-voice_vault/
-*.bak
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
+# Un-ignore project files
+!app.py
+!voice_engine.py
+!.gitignore
