@@ -3646,8 +3646,21 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .home-card-mentor:hover{border-color:rgba(240,180,41,.4);box-shadow:0 0 0 1px rgba(240,180,41,.12);}
 
 /* ── TOPBAR ── */
-#topbar{height:50px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:0;padding:0 20px;flex-shrink:0;}
-.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:14px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:4px;}
+#topbar{height:48px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:0;padding:0 20px;flex-shrink:0;}
+.tb-left{display:flex;align-items:center;flex:1;height:100%;}
+.tb-right{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.tb-diamond{color:var(--gold);font-size:16px;margin-right:4px;line-height:1;}
+.tb-brand{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:13px;color:var(--gold);letter-spacing:3px;margin-right:28px;}
+/* topbar context controls (mirror of ctxBar — same IDs drive the same JS) */
+.tb-gh-btn{display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-2);transition:.15s;white-space:nowrap;max-width:200px;}
+.tb-gh-btn:hover{border-color:var(--gold-tint-35);}
+.tb-gh-btn .ctx-gh-repo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;}
+.tb-hf-chip,.tb-gcp-chip{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;color:var(--text-muted);letter-spacing:.5px;white-space:nowrap;cursor:pointer;transition:.15s;}
+.tb-hf-chip.live{border-color:var(--jade-tint-35);color:var(--jade);}
+.tb-gcp-chip.live{border-color:rgba(66,133,244,.4);color:#7aacff;}
+.tb-lock{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;flex-shrink:0;}
+.tb-lock:hover{border-color:var(--gold);color:var(--gold);}
+.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:14px;color:var(--gold);letter-spacing:4px;}
 .tb-sep{width:1px;height:20px;background:var(--border);margin:0 2px;}
 .tb-status{font-size:10px;display:flex;align-items:center;gap:4px;color:var(--muted);}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
@@ -3660,12 +3673,12 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .tb-btn.gcp-on{border-color:var(--nvidia);color:var(--nvidia);}
 .tb-spacer{flex:1;}
 /* ── TOP NAV LINKS ── */
-.top-nav{display:flex;align-items:center;gap:0;margin-left:32px;}
-.top-nav-link{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--muted);text-decoration:none;padding:6px 16px;border-radius:5px;transition:.15s;text-transform:uppercase;position:relative;}
+.top-nav{display:flex;align-items:center;gap:0;height:100%;}
+.top-nav-link{font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--text-muted);text-decoration:none;padding:0 14px;height:48px;display:flex;align-items:center;transition:.15s;position:relative;letter-spacing:0;}
 .top-nav-link:hover{color:var(--text);}
 .top-nav-link.active{color:var(--gold);}
-.top-nav-link.active::after{content:'';position:absolute;bottom:-13px;left:50%;transform:translateX(-50%);width:24px;height:2px;background:var(--gold);border-radius:1px;}
-.top-nav-sep{font-size:10px;color:var(--border);padding:0 2px;}
+.top-nav-link.active::after{content:'';position:absolute;bottom:0;left:14px;right:14px;height:2px;background:var(--gold);border-radius:1px 1px 0 0;}
+.top-nav-sep{display:none;}
 /* hidden status buttons — keep for JS but visually in topbar corner */
 #voiceBtn{display:none;}
 .tb-hidden{display:none;}
@@ -3704,13 +3717,16 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .ed-tab[data-tab="preview"]{gap:5px;}
 
 /* ── HOME LANDING (Claude-Design-style) ── */
-#homeLanding{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:14vh 24px 40px;background:var(--bg);}
+#homeLanding{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:0 24px 60px;background:var(--bg);}
 #homeLanding.hidden{display:none;}
-.hl-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;margin-bottom:56px;}
-.hl-brand-icon{font-size:26px;filter:drop-shadow(0 0 6px rgba(240,180,41,.35));}
-.hl-brand-text{display:flex;flex-direction:column;line-height:1.15;}
-.hl-brand-name{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:19px;letter-spacing:3px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-.hl-brand-sub{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;}
+/* hero headline — centered, pushes composer down */
+.hl-hero{display:flex;flex-direction:column;align-items:center;text-align:center;padding-top:14vh;margin-bottom:28px;width:100%;max-width:800px;}
+.hl-hero-title{font-size:32px;font-weight:700;color:var(--text);letter-spacing:-.5px;margin-bottom:10px;line-height:1.2;}
+.hl-hero-sub{font-size:14px;color:var(--text-muted);font-weight:400;line-height:1.5;}
+/* motivational line above composer */
+.hl-daily-push{width:100%;max-width:800px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:2.5px;color:var(--gold);text-transform:uppercase;margin-bottom:10px;padding:0 2px;}
+.hl-brand{display:none;}
+.hl-brand-icon,.hl-brand-text,.hl-brand-name,.hl-brand-sub{display:none;}
 .hl-headline{font-family:'Inter',serif;font-size:34px;font-weight:600;color:var(--text);margin-bottom:28px;text-align:center;letter-spacing:-.5px;}
 /* ── COMPOSER CONTEXT BAR ── */
 #ctxBar{width:100%;max-width:800px;display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:0 2px;}
@@ -3965,23 +3981,32 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
 <!-- TOP BAR -->
 <div id="topbar">
-  <span class="logo-ide">CRANE</span>
-  <nav class="top-nav">
-    <a href="/ide" class="top-nav-link active">HOME</a>
-    <span class="top-nav-sep">·</span>
-    <a href="/studio" class="top-nav-link">THE VOICE</a>
-    <span class="top-nav-sep">·</span>
-    <a href="/images" class="top-nav-link">IMAGES</a>
-  </nav>
-  <div class="tb-spacer"></div>
-  <!-- status indicators — subtle right side -->
-  <div class="tb-status" style="gap:6px">
-    <div class="dot" id="nvDot"></div><span id="nvLabel" style="font-size:9px;letter-spacing:.5px">NIM</span>
-    <div class="tb-sep" style="margin:0 4px"></div>
-    <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()" style="font-size:9px;padding:2px 8px">⎇ GitHub</button>
-    <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()" style="font-size:9px;padding:2px 8px">☁ GCP</button>
+  <div class="tb-left">
+    <span class="tb-diamond">◇</span>
+    <span class="tb-brand">CRANE</span>
+    <nav class="top-nav">
+      <a href="/ide" class="top-nav-link active">Home</a>
+      <a href="/studio" class="top-nav-link">Studio</a>
+      <a href="/images" class="top-nav-link">Images</a>
+    </nav>
   </div>
-  <button id="voiceBtn" onclick="window.location='/bigq'" style="display:none">🎙 BIG Q</button>
+  <div class="tb-right">
+    <!-- GitHub repo picker — same JS hooks as ctxBar -->
+    <div class="ctx-gh-wrap" id="ctxGhWrap" style="position:relative;">
+      <button class="tb-gh-btn" onclick="toggleCtxGhMenu(event)">
+        <span style="opacity:.6;font-size:11px">⎇</span>
+        <span class="ctx-gh-repo" id="ctxGhRepo">Loading repos…</span>
+        <span style="color:var(--text-muted);font-size:8px">▾</span>
+      </button>
+      <div class="ctx-gh-menu" id="ctxGhMenu">
+        <div class="ctx-gh-head">YOUR REPOSITORIES</div>
+        <div id="ctxGhList"></div>
+        <div class="ctx-gh-new" onclick="ctxGhNewProject()">＋ Start new project</div>
+      </div>
+    </div>
+    <div class="tb-hf-chip" id="ctxHfChip">🤗 HF —</div>
+    <button class="tb-lock" onclick="toggleVault()" title="Nobility Vault">🔒</button>
+  </div>
 </div>
 
 <!-- MAIN -->
@@ -4043,33 +4068,15 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     </div>
     <div id="editorWrap">
       <div id="homeLanding">
-        <div class="hl-brand" style="display:none">
-          <span class="hl-brand-icon">🏗</span>
-          <div class="hl-brand-text">
-            <span class="hl-brand-name">CRANE</span>
-            <span class="hl-brand-sub">Design · Local · Sept 2026</span>
-          </div>
-        </div>
-        <div class="hl-headline" style="display:none">What should we create?</div>
 
-        <!-- CONTEXT BAR: GitHub folder · HF status · Vault lock -->
-        <div id="ctxBar">
-          <div class="ctx-gh-wrap" id="ctxGhWrap">
-            <button class="ctx-gh-btn" onclick="toggleCtxGhMenu(event)">
-              <span class="ctx-gh-icon">⎇</span>
-              <span class="ctx-gh-repo" id="ctxGhRepo">Loading repos…</span>
-              <span class="ctx-gh-arrow">▾</span>
-            </button>
-            <div class="ctx-gh-menu" id="ctxGhMenu">
-              <div class="ctx-gh-head">YOUR REPOSITORIES</div>
-              <div id="ctxGhList"></div>
-              <div class="ctx-gh-new" onclick="ctxGhNewProject()">＋ Start new project</div>
-            </div>
-          </div>
-          <div class="ctx-hf-chip" id="ctxHfChip">🤗 HF —</div>
-          <div class="ctx-gcp-chip" id="ctxGcpChip" onclick="openGCPModal()" title="Google Cloud — click to configure">☁ GCP —</div>
-          <button class="ctx-lock" onclick="toggleVault()" title="Nobility Vault">🔒</button>
+        <!-- HERO HEADLINE -->
+        <div class="hl-hero">
+          <h1 class="hl-hero-title">What should we build?</h1>
+          <p class="hl-hero-sub">Local models, your GitHub, zero cloud lock-in.</p>
         </div>
+
+        <!-- MOTIVATIONAL LINE -->
+        <div class="hl-daily-push">GET SHIT DONE ALL DAY TJ!</div>
 
         <div id="hlComposer" style="position:relative;">
 
