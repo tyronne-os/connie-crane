@@ -8,5 +8,6 @@
 !.gitignore
 !docs/
 !docs/**
+!CLAUDE.md
 !design/
 !design/**
