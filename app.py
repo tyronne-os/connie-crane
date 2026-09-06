@@ -3331,6 +3331,75 @@ async def local_chat(req: LocalChatRequest):
     except Exception as e:
         return {"error": f"Local inference failed: {e}"}
 
+# ── OpenAI-compatible /v1/ shim ──────────────────────────────────────────────
+# Lets Open Design (BYOK), Cursor, Codex, or any OpenAI-SDK client discover
+# and use CRANE's local Qwen vault models. Point the client at:
+#   base_url = http://127.0.0.1:8000/v1
+#   api_key  = crane-local   (any non-empty string)
+
+@app.get("/v1/models")
+async def v1_models():
+    now = int(time.time())
+    objs = []
+    for m in LOCAL_MODEL_ROSTER:
+        on_disk = bool(m.get("path") and os.path.exists(m["path"]))
+        if m["runs_on"] == "gpu":
+            on_disk = m.get("remote_ready", False)
+        objs.append({
+            "id": m["id"],
+            "object": "model",
+            "created": now,
+            "owned_by": "crane-local",
+            "root": m["id"],
+            "parent": None,
+            "permission": [],
+            "context_window": 32768,
+            "meta": {
+                "name": m["name"],
+                "cat": m.get("cat", 0),
+                "size": m.get("size", ""),
+                "runs_on": m["runs_on"],
+                "available": on_disk,
+            }
+        })
+    return {"object": "list", "data": objs}
+
+class V1ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class V1ChatRequest(BaseModel):
+    model: str = "local:qwen-coder-1.5b"
+    messages: list[V1ChatMessage] = []
+    max_tokens: int = 1024
+    temperature: float = 0.2
+    stream: bool = False
+
+@app.post("/v1/chat/completions")
+async def v1_chat_completions(req: V1ChatRequest):
+    # Translate to CRANE's internal LocalChatRequest shape and reuse existing logic
+    class _FakeMsgReq:
+        def __init__(self):
+            self.model = req.model
+            self.messages = [{"role": m.role, "content": m.content} for m in req.messages]
+            self.system = next((m.content for m in req.messages if m.role == "system"), "")
+            self.max_tokens = req.max_tokens
+            self.temperature = req.temperature
+    inner = await local_chat(_FakeMsgReq())
+    if "error" in inner:
+        from fastapi.responses import JSONResponse as _JR
+        return _JR(status_code=400, content={"error": {"message": inner["error"], "type": "crane_error", "code": 400}})
+    import uuid as _uuid, time as _t2
+    return {
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(_t2.time()),
+        "model": req.model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": inner["content"]}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "crane_source": inner.get("source", "local"),
+    }
+
 @app.get("/api/ide/hf/download/status")
 async def hf_download_status(log: str):
     if not os.path.exists(log):
