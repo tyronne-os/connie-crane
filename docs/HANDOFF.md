@@ -136,3 +136,64 @@ Check two things first, in this order:
    Orphaning happens by nav edit, not by deleting the page — the page is
    331KB of HTML/CSS/JS embedded in `app.py` and nobody has actually
    deleted a route yet in this project's history.
+
+## 2026-09-05 — GCP GPU brought back online, H3 model fully downloaded
+
+### The problem
+
+`berylize-node` (g2-standard-4, NVIDIA L4 24GB VRAM, preemptible, `us-east1-c`)
+was TERMINATED. MiniMax-H3 was mid-download on the laptop vault and had been
+stuck for hours due to HF Hub rate limits on a home connection (~3MB/s).
+
+### What we did
+
+1. Restarted the instance via `gcloud compute instances start berylize-node --zone=us-east1-c`
+2. SSHd in via Cloud Shell (`gcloud compute ssh berylize-node --zone=us-east1-c`)
+3. Kicked off download on the GCP box at 230–280MB/s datacenter speed — immediately
+   saw the disk-full problem: boot disk was at 87% (13GB free), text encoder alone is 14.6GB
+4. `us-east1-c` had zero resize capacity for `pd-ssd` or `pd-balanced` at that moment
+5. Created a **50GB `pd-standard` secondary disk** (`h3-storage`) — the only disk type
+   with available capacity in that zone — attached and mounted at `/mnt/h3storage`
+6. Reran the download with `local_dir_use_symlinks=False` (prevents HF's double-copy
+   cache from doubling disk footprint) and `nohup ... &` (survives SSH disconnect)
+7. All 4 files landed in ~15 minutes at GCP speeds
+
+### All files confirmed on GCP
+
+| File | Size | Path on berylize-node |
+|---|---|---|
+| `minimax_h3_fl2va_pruned-Q4_K_M.gguf` | 11GB | `/mnt/h3storage/minimax-h3/` |
+| `text_encoders/qwen3vl_32b_minimax_h3-Q4_K_M.gguf` | 14.6GB | `/mnt/h3storage/minimax-h3/text_encoders/` |
+| `vae/minimax_h3_video_vae_fp16.safetensors` | ~3GB | `/mnt/h3storage/minimax-h3/vae/` |
+| `vae/minimax_h3_audio_vae_fp32.safetensors` | ~1.5GB | `/mnt/h3storage/minimax-h3/vae/` |
+| **Total** | **~30GB** | `/mnt/h3storage` (49GB disk, 47GB free after) |
+
+### What changed in the codebase
+
+- `VIDEO_ROSTER` in `app.py` updated: `dest` and `check_file` now point at
+  `/mnt/h3storage/minimax-h3` instead of the vault path
+- Partial local vault download (`/mnt/NOBILITY_VAULT/models/minimax-h3`) cleared —
+  vault now has 62GB free
+- `docs/GPU_RECOVERY.md` created with full incident writeup and rules
+
+### Session recovery note
+
+This session (`CONNIE CRANE IDE` in Claude Desktop) was briefly lost/unlocatable
+during this work. It was recovered. The branch `claude/restore-archived-project-lfpu2z`
+was created in the recovery session with commits `b8bc0f9` (STUDIO nav restore)
+and `a354323` (initial handoff doc). Both were merged into `main` on 2026-09-05.
+
+The session "CONNIE CRANE IDE" (renamed from "Connecting Nobility Depository vault
+to Connie Crane") is the authoritative record for all voice library build work —
+the 50-voice harvest, the Vernacular Vibration Library design, the extractor/mixer
+tooling — and must be preserved in Claude Desktop history.
+
+### Rules for this GPU going forward
+
+- Always download to `/mnt/h3storage`, never home or boot disk
+- Always `nohup ... &` so downloads survive SSH disconnects
+- Always use `local_dir_use_symlinks=False` with `hf_hub_download`
+- **Mount persistence**: the secondary disk does NOT auto-mount on reboot yet —
+  `fstab` entry still needs to be added. Until then, run this after every restart:
+  `sudo mount /dev/nvme0n2 /mnt/h3storage`
+- `berylize-node` is **preemptible** — expect random terminations
