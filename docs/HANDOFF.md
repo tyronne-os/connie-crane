@@ -4,7 +4,45 @@ Running log of what changed, why, and where things live. Read this first
 before poking at the nav or the voice pages — it'll save you a re-discovery
 pass like the one that produced this doc.
 
+## Source conversation for the Voice Studio build
+
+The extractor, Quick Mix, Voice Fusion & Track Mixer, Hollywood Vernacular
+Presets, Quincy Jones Advanced sculpting panel, and BIG Q node canvas — all
+of it (see the entry below) — was built in one Claude Desktop chat, working
+directly against this repo and the `berylize-node` GPU box. That chat also
+kicked off the harvest run for what the founder calls the **Vernacular
+Vibration Library**: a working target of ~50 sourced voice clips (family
+therapy / clinical, romance-audiobook, Black-intellectual-lecture, true-crime
+narration, etc. — see the "Elite Female Voices," "Black Intellectuals," and
+"True Crime" sidebar categories baked into `/studio`) to seed the Hollywood
+Vernacular preset system (`NOLA NOIR`, `HARLEM ORATORY`, `ATL TRAP CADENCE`,
+`DEEP SOUTH WARMTH`, `PULPIT`, `BROADCAST CLEAN`, `ACADEMIC LECTURE`,
+`KITCHEN TABLE` — `app.py` around line 1188).
+
+- **Chat title, original:** "Connecting Nobility Depository vault to Connie
+  Crane"
+- **Chat title, current (renamed by the founder, 2026-09-06):**
+  **"CONNIE CRANE IDE"**
+- This doc can't inline that chat's transcript — it lives in Claude Desktop
+  history, not in this repo or in anything this session can fetch — so this
+  entry is the pointer: **if you need the exact extraction/mixing decisions
+  from that build session, open "CONNIE CRANE IDE" in Claude Desktop.** Everything
+  it produced in code is committed here; the reasoning and back-and-forth
+  behind it is only in that chat.
+- The harvested audio itself is **not** in this git repo (by design — see
+  `.gitignore`, which ignores everything except a short allow-list of source
+  files). It lives on disk at `/mnt/NOBILITY_VAULT/voice_vault` on
+  `berylize-node` (see `docs/GPU_RECOVERY.md` for that instance's specs and
+  disk layout). Nothing in this repo currently counts or lists what's
+  actually landed in that directory — if the "50 voices" number matters for
+  planning, verify it directly on the box (`ls /mnt/NOBILITY_VAULT/voice_vault
+  | wc -l`) rather than trusting this doc or the chat.
+
 ## 2026-09-06 — STUDIO restored to nav, `/bigq` dead-link fixed
+
+**This is the problem that just got solved.** The nav rebuild that happened
+after the "CONNIE CRANE IDE" build session orphaned everything that chat had
+just built — see below for the fix.
 
 ### What was wrong
 
