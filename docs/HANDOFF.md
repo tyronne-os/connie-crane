@@ -197,3 +197,116 @@ tooling — and must be preserved in Claude Desktop history.
   `fstab` entry still needs to be added. Until then, run this after every restart:
   `sudo mount /dev/nvme0n2 /mnt/h3storage`
 - `berylize-node` is **preemptible** — expect random terminations
+
+## 2026-09-06 — Production audit: page-by-page walkthrough, 6 broken links fixed, repo secured
+
+**Context:** founder is about to lose Claude Code access and needs CRANE
+production-stable enough to keep programming solo using the local vault
+models. This audit went through every page live against the running
+server (curl-tested, not just read from source) before sign-off.
+
+### HOME (`/ide`) — Claude Desktop-style IDE
+
+Confirmed working, live-tested:
+- Local chat inference (`local:qwen-coder-1.5b`) — real prompt in, real
+  model response out (`source: local_vault`)
+- CAT-5 auto-classification — trivial prompt correctly classified CAT-1,
+  a complex multi-part prompt correctly classified CAT-4 with `needs_gpu:true`
+- GCP remote-model (CAT-4/5) fallback — `qwen-coder-14b` fails gracefully
+  with an actionable message when no GCP endpoint is configured, instead
+  of crashing
+- GitHub repo browsing (file tree + file read) — pulls real content from
+  `tyronne-os/connie-crane`
+- NVIDIA NIM model catalog — live list loads
+- All 71 `onclick` handlers on this page resolve to real functions
+
+No bugs found on `/ide`.
+
+### STUDIO (`/studio`, `/bigq`)
+
+Both routes correct (`/studio` → 200, `/bigq` → 307 → 200). Mixer, Quincy,
+BigQ, and Clone render endpoints all respond cleanly to malformed/empty
+input — no 500s. No bugs found.
+
+### CONNIE (`/connie`)
+
+Loads correctly, `/api/brain/roles` and `/api/vault/files` both wired.
+
+**Bug found & fixed:** "🎙 BIG Q" topbar button and "🎛 Open BIG Q" panel
+button both pointed at `/` (lands on `/ide` since root redirects there)
+instead of `/bigq` (Voice Studio) — leftover from before the `/bigq`
+route existed; the earlier nav-restore commit added the route but never
+repointed these two buttons.
+
+### DEPO (`/depo`) — Nobility Vault + new GPU Admin panel
+
+Vault browser, upload, search/filter/sort all wired correctly.
+
+**3 bugs found & fixed, same root cause as CONNIE's:**
+1. Topbar "🎙 BIG Q" button → `/` instead of `/bigq`
+2. `sendToBigQ()` ("Send to BIG Q Studio" detail-panel action) → `/`
+   instead of `/bigq` — used spaced JS syntax (`window.location = '/'`)
+   that dodged the first grep pass used to catch the CONNIE instance
+3. `sendFileToBigQ()` (inline per-file BIG Q shortcut in the vault grid)
+   → same bug, same fix
+
+**New feature built this session:** GPU Admin Control panel, bottom-left
+on `/depo` — manual START/STOP GPU button, live session cost/runtime/rate,
+lifetime cost, and a sleep-timer dropdown (5/10/20/30 min). Full
+start → meter-check → stop cycle verified over curl.
+
+**Bug caught while building it:** the sleep-timer dropdown posts
+`idle_timeout` to `/api/gpu/meter/config`, but that field was silently
+ignored — `GPU_IDLE_TIMEOUT_S` was a hardcoded 600s constant, not
+configurable. Fixed: `idle_timeout` is now persisted per-meter-file and
+read dynamically by both `_meter_state()` and the auto-off watchdog.
+Without this fix, the sleep-timer control would have looked functional
+but done nothing — exactly the class of bug this audit was meant to catch.
+
+### IMAGES (`/images`)
+
+Model catalog, gallery, and ZeroGPU status all respond correctly.
+
+**Gap found (architectural, not a bug, not yet fixed):** MiniMax-H3 shows
+`"downloaded": false` in `/api/images/models` even though all ~30GB is
+confirmed present on `berylize-node` (see `docs/GPU_RECOVERY.md`). The
+check is `os.path.exists()` against a path that only exists on the GCP
+box's disk — this FastAPI server runs on the laptop and has no visibility
+into `/mnt/h3storage` on the remote instance. Not broken, but will
+misleadingly suggest "still downloading" in the UI. Follow-up options:
+a remote status check (SSH or a small status endpoint on the GPU box), or
+a manual "mark downloaded" override — neither built yet, founder's call
+on priority.
+
+### Backend fixes, summarized
+
+| Fix | Why it mattered |
+|---|---|
+| `python-multipart` added to `requirements.txt`, and **actually committed** (fixed locally first, forgot to commit — caught on a second pass reading the file back via the GitHub API) | Fresh clone would fail to boot — multipart uploads need it |
+| GPU `idle_timeout` config bug (above) | The exact feature requested (admin GPU toggle + sleep timer) would have silently no-op'd |
+| 6 total broken "BIG Q" links across IDE/CONNIE/DEPO | Every one sent users to the wrong page |
+
+### Repo visibility — critical finding, resolved
+
+`tyronne-os/connie-crane` was discovered to be **PUBLIC** on GitHub during
+this audit, contradicting the standing assumption that it was private.
+No credentials were exposed (all secrets are read server-side from the
+vault, never returned to any client), but full source, architecture,
+GCP project name (`posh-eden`), and instance names (`berylize-node`) were
+publicly visible for the duration of this build. Flagged to founder
+immediately on discovery; founder approved making it private. Confirmed
+via direct GitHub API check: `"private": true, "visibility": "private"`.
+
+### Verification method
+
+Every fix in this audit was confirmed against the **live running server**
+via `curl`, not just read from source — routes re-tested after each
+restart, GPU meter cycle run start-to-stop, GitHub file tree/read pulled
+real repo content, local inference produced a real model response. Where
+a fix was committed, the live page was re-fetched afterward and grepped
+for the corrected string before considering it done.
+
+### Sign-off status
+
+Founder is running a 30-minute test drive (fake project, watching CRANE
+code end-to-end) before final sign-off on production readiness.
