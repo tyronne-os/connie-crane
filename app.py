@@ -3605,7 +3605,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <a href="/images" class="nav-tab img">IMAGES</a>
   </nav>
   <div class="tb-spacer"></div>
-  <button id="voiceBtn" onclick="window.location='/'">🎙 BIG Q</button>
+  <button id="voiceBtn" onclick="window.location='/bigq'">🎙 BIG Q</button>
 </div>
 
 <!-- MAIN -->
@@ -4499,7 +4499,7 @@ input[type=range]{flex:1;accent-color:var(--purple);}
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
-  <button class="tb-btn" onclick="window.location='/'">🎙 BIG Q</button>
+  <button class="tb-btn" onclick="window.location='/bigq'">🎙 BIG Q</button>
 </div>
 
 <div id="main">
@@ -4596,7 +4596,7 @@ input[type=range]{flex:1;accent-color:var(--purple);}
         </div>
         <div class="row">
           <button class="btn" onclick="deployAgent()">⬡ Deploy Agent</button>
-          <button class="btn-sm" onclick="window.location='/'">🎛 Open BIG Q</button>
+          <button class="btn-sm" onclick="window.location='/bigq'">🎛 Open BIG Q</button>
         </div>
         <div id="deployMsg"></div>
       </div>
@@ -4810,7 +4810,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
-  <button class="tb-btn" onclick="window.location='/'">🎙 BIG Q</button>
+  <button class="tb-btn" onclick="window.location='/bigq'">🎙 BIG Q</button>
 </div>
 
 <!-- SEARCH + FILTER BAR -->
