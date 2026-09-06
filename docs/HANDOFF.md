@@ -310,3 +310,116 @@ for the corrected string before considering it done.
 
 Founder is running a 30-minute test drive (fake project, watching CRANE
 code end-to-end) before final sign-off on production readiness.
+
+## 2026-09-06 — IDE landing redesign, Open Design Linux build, CONNIE architecture
+
+### Open Design on Linux (separate app, `localhost:7456`)
+
+`tyronne-os/open-design` is an Electron desktop app — no Linux binary exists.
+Solution: build from source, run as a Node.js daemon.
+
+**One-time build (already done):**
+```bash
+cd ~/open-design
+corepack enable && corepack prepare pnpm@10.33.2 --activate
+pnpm install          # needed node-pty in onlyBuiltDependencies — already patched
+pnpm --filter @opendesign/daemon build
+pnpm --filter @opendesign/web build
+```
+
+**Start / stop:**
+```bash
+~/start-open-design.sh   # starts daemon, opens localhost:7456 in browser
+~/stop-open-design.sh    # kills daemon
+# Desktop launcher also available: ~/.local/share/applications/open-design.desktop
+```
+
+**Connect Open Design to CRANE's local Qwen models (BYOK):**
+Open Design → Settings → Execution → Custom BYOK API
+- Base URL: `http://127.0.0.1:8000/v1`
+- API key: `crane-local`
+
+CRANE now serves a full OpenAI-compatible shim at `/v1/models` + `/v1/chat/completions`
+that exposes all 6 local Qwen models (CAT-1 through CAT-5). Committed in `9430f15`.
+
+### IDE landing redesign — two rounds this session
+
+**Round 1 (previous session, commit `af07a25`):** CRANE `/ide` got the Open Design
+visual language — dark `#07090d` ground, left icon nav rail, card grid for projects.
+
+**Round 2 (this session):**
+1. **Ilya Sutskever card** — VAULT home card replaced with Ilya's photo (`/static/ilya.jpg`,
+   served from new `/home/hunt/static/` directory mounted at `/static`). Clicking navigates
+   to `/ide`. The 🔐 vault lock moved permanently to the chat composer toolbar (it was
+   already there — now it's the only VAULT entry point).
+2. **Nav rail** — DEPO (🔐) slot replaced by Ilya's circular photo avatar, also links to `/ide`.
+3. **New top nav** — replaced the old topbar (NIM · GitHub · GCP · BIG Q buttons) with a clean
+   three-link nav: `HOME · THE VOICE · IMAGES`. GitHub/GCP status indicators moved to a
+   small cluster on the right side of the topbar; CONNIE removed from nav entirely (it's a
+   backend engineering layer, not a user-facing destination).
+4. **Full color retheme — black + old gold + white:**
+   - Background: `#080807` (warm matte black, replaces blue-black `#07090d`)
+   - Accent / gold: `#C8A82A` (old gold, replaces teal `#3fe0a8` and bright amber `#f59e0b`)
+   - Gold bright: `#E8C96A` (gradient highlight)
+   - Text: `#f0ead8` (warm white, replaces cool blue-white `#d7e2f0`)
+   - Muted: `#6b5940` (warm, replaces cool blue-grey `#4b5a70`)
+   - Border: `#2a2416` (warm dark, replaces `#21262d`)
+   - All accents (active tabs, send button, hover states, nav underline, cursor) → old gold
+   - CRANE logo gradient: old gold → gold-bright (replaces teal→blue)
+   - Send button: gold background with black text (replaces purple→blue with white text)
+
+**Static file serving added to `app.py`:**
+```python
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="/home/hunt/static"), name="static")
+```
+Drop any file in `/home/hunt/static/` and it's immediately live at `/static/<filename>` —
+no restart needed. Image for Ilya: `/home/hunt/static/ilya.jpg`.
+
+### CONNIE autonomous agent — architecture designed, not yet built
+
+Full architecture diagram published as an artifact (Claude Desktop session).
+Plan documented here for the next build session:
+
+**The loop (zero keyboard after goal input):**
+1. Qwen2.5 Coder 1.5B (CAT-1, CPU) — planner: decomposes goal → subtasks → routes each
+2. Four executor paths, routed by subtask type:
+   - **CODE** → CRANE CAT-5 protocol (1.5B→3B→7B local, 14B/32B on berylize-node)
+   - **CLICK** → CONNIE-HANDS MCP (AT-SPI2 semantic tree, no vision needed)
+   - **SHELL** → Existing `/api/ide/shell` (nmap, sqlmap, gobuster, git, pytest, docker)
+   - **VISION** → Fallback: screenshot → berylize-node → Qwen2-VL-7B (games/canvases only)
+3. Qwen2.5 Coder 1.5B (CAT-1, CPU) — verifier: checks result, loops if failed, reports done
+
+**The AT-SPI2 insight (why small models are enough):** CONNIE-HANDS reads the semantic
+accessibility tree of every open Linux app — labels, values, positions, roles — exactly
+like a screen reader. A 1.5B model can pick the right element without any vision model.
+Vision (MAI-UI / Qwen2-VL) fires only for apps with no accessibility tree (games, canvas).
+
+**Hardware split:**
+- Celeron N4500 laptop: planner, verifier, AT-SPI2, terminal, CAT-1/2/3 (~90% of tasks)
+- GCP L4 (berylize-node): CAT-4/5 code, Qwen2-VL vision fallback
+
+**Build order (not yet started):**
+1. `npm i -g open-computer-use` — installs CONNIE-HANDS MCP binary
+2. Wire MCP into CRANE: `POST /api/connie/hands/call` → open-computer-use stdio
+3. Build `POST /api/connie/run` — the orchestrator endpoint (goal → loop → stream)
+4. Add `/connie` UI: goal input + live log stream
+5. `od mcp install` — connect Open Design to CRANE's `/v1/` for Qwen-powered design
+6. Vision fallback: deploy Qwen2-VL-7B on berylize-node (optional, AT-SPI2 covers most)
+
+**Refs:**
+- CONNIE-HANDS fork: `tyronne-os/CONNIE-HANDS` (upstream: `iFurySt/open-computer-use`)
+- MAI-UI vision agent paper: `tongyi-mai.github.io/Qwen-UI-Agent/`
+
+### Where things are now
+
+| What | Route / path | Note |
+|---|---|---|
+| CRANE IDE (new landing) | `/ide` | Black + old gold theme, new top nav |
+| Voice Studio | `/studio`, `/bigq` | THE VOICE in top nav |
+| Images | `/images` | IMAGES in top nav |
+| CONNIE (backend) | `/connie` | Not in nav — engineering layer |
+| DEPO / Vault | `/depo` | Accessible via 🔐 in composer toolbar |
+| Open Design | `localhost:7456` | Separate Node.js daemon, `~/start-open-design.sh` |
+| Ilya's photo | `/home/hunt/static/ilya.jpg` | Served at `/static/ilya.jpg` |
+| CONNIE-HANDS | Not installed yet | Step 1 when CONNIE build begins |
