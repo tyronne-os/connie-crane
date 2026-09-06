@@ -3312,6 +3312,34 @@ async def clear_chat_history():
     _write_vault_memory(CRANE_CHAT_HISTORY, [])
     return {"status": "cleared"}
 
+# ── SESSION STATE ─────────────────────────────────────────────────────────────
+CRANE_SESSION_FILE = os.path.expanduser("~/.crane_session.json")
+
+class SessionState(BaseModel):
+    repo: str = ""
+    active_file: str = ""
+    branch: str = "main"
+    scroll: int = 0
+    file_shas: dict = {}
+
+@app.get("/api/ide/session")
+async def get_session():
+    if not os.path.exists(CRANE_SESSION_FILE):
+        return {"repo": "", "active_file": "", "branch": "main", "scroll": 0, "file_shas": {}}
+    try:
+        with open(CRANE_SESSION_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"repo": "", "active_file": "", "branch": "main", "scroll": 0, "file_shas": {}}
+
+@app.post("/api/ide/session")
+async def save_session(req: SessionState):
+    data = req.dict()
+    data["saved_at"] = datetime.now().isoformat()
+    with open(CRANE_SESSION_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    return {"status": "ok"}
+
 # ── CAT-5 Model Routing Protocol ──────────────────────────────────────────────
 import re as _cat_re
 
@@ -4196,12 +4224,14 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     <div id="previewPane">
       <div id="previewBar">
         <span class="pb-label">LIVE RENDER CANVAS</span>
+        <span id="pbPortLabel" style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--green);display:none;margin-left:4px;"></span>
         <span style="flex:1"></span>
+        <button class="pb-btn" id="pbDevBtn" onclick="toggleDevServer()" title="Start project dev server on its own port (npm/python/etc)">⚡ dev server</button>
         <button class="pb-btn" id="pbInspect" onclick="togglePreviewInspect()">⌖ inspect</button>
         <button class="pb-btn" onclick="refreshPreview()">↻ refresh</button>
       </div>
-      <div id="previewEmpty">Ask CONNIE for HTML/CSS/JS and the live render shows here.<br>Or open a .html file and click Live Preview.</div>
-      <iframe id="previewFrame" sandbox="allow-scripts allow-forms" style="display:none"></iframe>
+      <div id="previewEmpty">Ask CONNIE for HTML/CSS/JS — live render appears here.<br>For server projects, click <b>⚡ dev server</b> to run on its own port inside this pane.</div>
+      <iframe id="previewFrame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups" style="display:none"></iframe>
     </div>
     <div id="terminal" class="collapsed">
       <div id="termHead" onclick="toggleTerminal(event)">
@@ -4358,6 +4388,23 @@ let _vaultFiles = [];
 let _selectedVaultFiles = [];
 let _repoOwner = '';
 let _repoName = '';
+let _fileShas = {};       // path → current GitHub sha (needed for update writes)
+let _dirtyFiles = new Set(); // files modified since last push
+let _autoSaveTimer = null;
+
+// ── TOAST ──
+function showToast(msg, type='ok', dur=3000){
+  let t=document.getElementById('craneToast');
+  if(!t){ t=document.createElement('div'); t.id='craneToast';
+    t.style.cssText='position:fixed;bottom:56px;left:50%;transform:translateX(-50%);z-index:9999;font-family:"JetBrains Mono",monospace;font-size:11px;padding:7px 18px;border-radius:8px;pointer-events:none;transition:opacity .3s;white-space:nowrap;';
+    document.body.appendChild(t); }
+  t.textContent=msg;
+  t.style.background=type==='ok'?'rgba(63,224,168,.18)':type==='warn'?'rgba(245,158,11,.18)':'rgba(239,68,68,.18)';
+  t.style.border='1px solid '+(type==='ok'?'rgba(63,224,168,.4)':type==='warn'?'rgba(245,158,11,.4)':'rgba(239,68,68,.4)');
+  t.style.color=type==='ok'?'var(--green)':type==='warn'?'var(--gold)':'#fca5a5';
+  t.style.opacity='1';
+  clearTimeout(t._to); t._to=setTimeout(()=>{t.style.opacity='0';},dur);
+}
 let _modelMenuOpen = false;
 
 // ── EDITOR ─────────────────────────────────────────────────────────────────
@@ -4374,6 +4421,7 @@ function initEditor() {
     extraKeys: {'Ctrl-S': saveCurrentFile, 'Ctrl-Enter': ()=>sendChat()},
   });
   _editor.setSize('100%', '100%');
+  _editor.on('change', _onEditorChange);
 }
 
 // ── MODEL MENU ─────────────────────────────────────────────────────────────
@@ -4844,6 +4892,66 @@ function refreshPreview(){
     document.getElementById('previewEmpty').style.display='flex';
   }
 }
+// ── DEV SERVER — project preview on its own port ──────────────────────────
+let _devServerPort=null, _devServerPid=null;
+async function toggleDevServer(){
+  const btn=document.getElementById('pbDevBtn');
+  const portLabel=document.getElementById('pbPortLabel');
+  if(_devServerPort){
+    // stop
+    if(_devServerPid) await runCmd(`kill ${_devServerPid} 2>/dev/null; echo stopped`);
+    _devServerPort=null; _devServerPid=null;
+    btn.textContent='⚡ dev server'; btn.classList.remove('active');
+    portLabel.style.display='none';
+    document.getElementById('previewFrame').src='about:blank';
+    return;
+  }
+  // detect project type from active repo or open files
+  const port = await _findFreePort();
+  if(!port){ alert('Could not find a free port (8001-8099).'); return; }
+  const cmd = _detectDevCmd(port);
+  btn.textContent='⏳ starting…'; btn.disabled=true;
+  // run via shell endpoint
+  const r=await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:`cd ${_repoOwner?'/home/hunt/'+_repoName:'/home/hunt'} 2>/dev/null; ${cmd}`})});
+  // wait up to 8s for port to open
+  for(let i=0;i<16;i++){
+    await new Promise(res=>setTimeout(res,500));
+    try{ const t=await fetch(`http://127.0.0.1:${port}`,{mode:'no-cors'}); break; }catch(e){}
+  }
+  _devServerPort=port;
+  const frame=document.getElementById('previewFrame');
+  frame.src=`http://127.0.0.1:${port}`;
+  frame.style.display='block';
+  document.getElementById('previewEmpty').style.display='none';
+  if(!document.getElementById('previewPane').classList.contains('active')) togglePreview();
+  portLabel.textContent=`localhost:${port}`;
+  portLabel.style.display='inline';
+  btn.textContent='■ stop server'; btn.classList.add('active'); btn.disabled=false;
+}
+async function _findFreePort(){
+  for(let p=8001;p<8100;p++){
+    const r=await fetch('/api/ide/shell',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cmd:`ss -tlnH sport = :${p} | head -1`})});
+    const d=await r.json();
+    if(!(d.stdout||'').trim()) return p;
+  }
+  return null;
+}
+function _detectDevCmd(port){
+  // sniff open files / repo name to pick the right start command
+  const name=(_repoName||'').toLowerCase();
+  const files=Object.keys(_tabs||{});
+  if(files.some(f=>/package\.json$/.test(f))||name.includes('next')||name.includes('react'))
+    return `PORT=${port} npm start 2>&1 &`;
+  if(files.some(f=>/requirements\.txt$|\.py$/.test(f)))
+    return `python3 -m http.server ${port} 2>&1 &`;
+  if(files.some(f=>/Cargo\.toml$/.test(f)))
+    return `cargo run --release -- --port ${port} 2>&1 &`;
+  // default: static file server
+  return `python3 -m http.server ${port} 2>&1 &`;
+}
+
 function togglePreviewInspect(){
   _previewInspect=!_previewInspect;
   document.getElementById('pbInspect').classList.toggle('active',_previewInspect);
@@ -4995,8 +5103,68 @@ async function saveCurrentFile(){
   const r=await fetch('/api/ide/github/write',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({owner:_repoOwner,repo:_repoName,path:_activeTab,content,message:`CRANE IDE: update ${_activeTab.split('/').pop()}`,sha,branch:'main'})});
   const d=await r.json();
-  appendMsg('sys', d.status==='ok'?'✅ Saved to GitHub: '+_activeTab:'❌ '+(d.error||''));
-  if(d.status==='ok'&&_tabs[_activeTab]){_tabs[_activeTab].sha=d.sha;_tabs[_activeTab].content=content;}
+  if(d.status==='ok'&&_tabs[_activeTab]){
+    _tabs[_activeTab].sha=d.sha;_tabs[_activeTab].content=content;
+    _fileShas[_activeTab]=d.sha; _dirtyFiles.delete(_activeTab);
+    showToast('↑ saved to GitHub · '+_activeTab.split('/').pop());
+  } else {
+    appendMsg('sys','❌ '+(d.error||'save failed'));
+  }
+}
+
+// ── AUTO-SAVE (every 10 min) ─────────────────────────────────────────────────
+async function autoSave(){
+  if(!_repoOwner||_dirtyFiles.size===0) return;
+  const files=[..._dirtyFiles];
+  let pushed=0;
+  for(const path of files){
+    const tab=_tabs[path]; if(!tab) continue;
+    const sha=tab.sha||'';
+    const ts=new Date().toLocaleTimeString('en-US',{timeZone:'America/Chicago',hour:'2-digit',minute:'2-digit'});
+    const r=await fetch('/api/ide/github/write',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({owner:_repoOwner,repo:_repoName,path,content:tab.content,
+        message:`CRANE auto-save · ${path.split('/').pop()} · ${ts} CST`,sha,branch:'main'})});
+    const d=await r.json();
+    if(d.status==='ok'){ tab.sha=d.sha; _fileShas[path]=d.sha; _dirtyFiles.delete(path); pushed++; }
+  }
+  if(pushed>0){
+    showToast(`↑ auto-saved ${pushed} file${pushed>1?'s':''} to GitHub`,'ok',4000);
+    saveSessionState();
+  }
+}
+
+// ── SESSION STATE ────────────────────────────────────────────────────────────
+async function saveSessionState(){
+  if(!_repoOwner) return;
+  await fetch('/api/ide/session',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      repo:_repoOwner+'/'+_repoName,
+      active_file:_activeTab||'',
+      branch:'main',
+      scroll:document.getElementById('chatLog')?.scrollTop||0,
+      file_shas:_fileShas
+    })}).catch(()=>{});
+}
+
+async function restoreSession(){
+  try{
+    const r=await fetch('/api/ide/session'); const s=await r.json();
+    if(!s.repo) return;
+    _fileShas=s.file_shas||{};
+    // restore the last active repo via the context bar picker
+    const [owner,name]=s.repo.split('/');
+    if(owner&&name) ctxGhPickRepo(s.repo,name);
+    if(s.scroll) setTimeout(()=>{ const cl=document.getElementById('chatLog'); if(cl) cl.scrollTop=s.scroll; },800);
+    showToast('↩ resumed · '+s.repo,'ok',5000);
+  }catch(e){}
+}
+
+// mark editor dirty on any change
+function _onEditorChange(){
+  if(_activeTab&&_activeTab!=='welcome'&&_repoOwner){
+    if(_tabs[_activeTab]) _tabs[_activeTab].content=_editor.getValue();
+    _dirtyFiles.add(_activeTab);
+  }
 }
 
 // ── GCP ────────────────────────────────────────────────────────────────────
@@ -5259,7 +5427,12 @@ window.addEventListener('DOMContentLoaded',()=>{
   setTimeout(()=>runCmd('echo "CRANE IDE $(date)" && python3 --version'),500);
   // GPU mini-meter — poll every 8s
   nrRefreshGpu(); setInterval(nrRefreshGpu,8000);
+  // session restore + 10-min auto-save
+  restoreSession();
+  _autoSaveTimer = setInterval(autoSave, 10 * 60 * 1000);
 });
+
+window.addEventListener('beforeunload', () => { saveSessionState(); });
 </script>
 </body>
 </html>

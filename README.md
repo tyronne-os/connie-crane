@@ -1,6 +1,6 @@
 # CONNIE CRANE
 
-**Last updated: September 06, 2026 · 1:02 PM CST**
+**Last updated: September 06, 2026 · 3:30 PM CST**
 
 Local-first AI IDE and voice foundry. FastAPI backend (`app.py`) serving a full single-page IDE at `http://127.0.0.1:8000/ide`, wired directly to the **NOBILITY DEPOSITORY** credential vault. No cloud dependency for inference — all models run locally or on a GCP L4 you spin up and down.
 
@@ -58,6 +58,13 @@ Permanent hardwired connection bar — always visible:
 | API keys | Nobility Vault (`vault.json`) | **never** backed up |
 
 Chat history auto-saves to Nobility Vault after every reply and restores on page load. HF backup fires async in the background. The `tyronne-os/crane-data-lake` private dataset repo is created automatically on first save.
+
+**Session restore + 10-min auto-save (wired September 06, 2026 · 3:30 PM CST)**
+- `restoreSession()` fires on `DOMContentLoaded` — resumes last active repo and file, restores `_fileShas` map
+- CodeMirror `onChange` event calls `_onEditorChange()` — marks files dirty immediately on any keystroke
+- `setInterval(autoSave, 600000)` runs every 10 minutes — pushes all dirty files to GitHub with CST-timestamped commit messages
+- `window.beforeunload` calls `saveSessionState()` — persists active repo/file/scroll/shas to `~/.crane_session.json` on close
+- Toast notifications confirm every save and restore
 
 **Vault memory endpoints:**
 - `GET/POST/DELETE /api/vault/voice-memory`
