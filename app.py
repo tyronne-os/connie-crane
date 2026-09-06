@@ -4,6 +4,7 @@ import re
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -3185,6 +3186,132 @@ async def ide_shell(req: ShellRequest):
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "rc": 1}
 
+# ── DATA LAKE ROUTING ─────────────────────────────────────────────────────────
+# Primary storage  : GitHub (repos via GH token)
+# Backup           : HuggingFace private dataset (crane-data-lake)
+# Voice memory     : Nobility Vault — local persistent
+# Chat history     : Nobility Vault — local persistent
+# Everything else  : GitHub
+
+CRANE_PROJECTS_FILE    = "/home/hunt/.crane_projects.json"
+CRANE_HF_BACKUP_REPO   = "tyronne-os/crane-data-lake"
+CRANE_VOICE_MEMORY     = "/mnt/NOBILITY_VAULT/voice_vault/crane_voice_memory.json"
+CRANE_CHAT_HISTORY     = "/mnt/NOBILITY_VAULT/voice_vault/crane_chat_history.json"
+
+import asyncio as _asyncio
+
+async def _hf_backup(filename: str, payload: dict):
+    """Fire-and-forget: push a JSON file to the private HF data-lake dataset."""
+    token = _vault_get("HF_TOKEN")
+    if not token:
+        return
+    try:
+        import io as _io
+        from huggingface_hub import HfApi as _HfApi
+        api = _HfApi()
+        api.create_repo(CRANE_HF_BACKUP_REPO, repo_type="dataset",
+                        private=True, token=token, exist_ok=True)
+        content = json.dumps(payload, indent=2).encode()
+        api.upload_file(
+            path_or_fileobj=_io.BytesIO(content),
+            path_in_repo=filename,
+            repo_id=CRANE_HF_BACKUP_REPO,
+            repo_type="dataset",
+            token=token,
+            commit_message=f"CRANE auto-backup · {filename}",
+        )
+    except Exception:
+        pass  # backup is best-effort; never block the primary save
+
+# ── PROJECTS (home landing) ───────────────────────────────────────────────────
+class ProjectLogRequest(BaseModel):
+    name: str
+    template: str = "blank"
+
+@app.get("/api/ide/projects")
+async def list_projects():
+    if not os.path.exists(CRANE_PROJECTS_FILE):
+        return {"projects": []}
+    try:
+        with open(CRANE_PROJECTS_FILE) as f:
+            return {"projects": json.load(f)}
+    except Exception:
+        return {"projects": []}
+
+@app.post("/api/ide/projects")
+async def log_project(req: ProjectLogRequest):
+    projects = []
+    if os.path.exists(CRANE_PROJECTS_FILE):
+        try:
+            with open(CRANE_PROJECTS_FILE) as f:
+                projects = json.load(f)
+        except Exception:
+            projects = []
+    projects.insert(0, {
+        "name": req.name,
+        "template": req.template,
+        "when": datetime.now().strftime("%b %d, %Y %H:%M"),
+    })
+    projects = projects[:50]
+    with open(CRANE_PROJECTS_FILE, "w") as f:
+        json.dump(projects, f, indent=2)
+    # async backup to HF data-lake (best-effort, does not block response)
+    _asyncio.create_task(_hf_backup("crane_projects.json", {"projects": projects}))
+    return {"status": "ok", "projects": projects}
+
+# ── VAULT MEMORY ENDPOINTS ────────────────────────────────────────────────────
+# Voice memory and chat history persist to Nobility Vault (local, never cloud)
+
+class MemorySaveRequest(BaseModel):
+    messages: list
+    label: str = ""
+
+def _read_vault_memory(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"messages": []}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {"messages": []}
+
+def _write_vault_memory(path: str, messages: list, label: str = ""):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"messages": messages, "label": label,
+                   "saved_at": datetime.now().isoformat()}, f, indent=2)
+
+@app.get("/api/vault/voice-memory")
+async def get_voice_memory():
+    return _read_vault_memory(CRANE_VOICE_MEMORY)
+
+@app.post("/api/vault/voice-memory")
+async def save_voice_memory(req: MemorySaveRequest):
+    _write_vault_memory(CRANE_VOICE_MEMORY, req.messages, req.label)
+    return {"status": "ok", "count": len(req.messages)}
+
+@app.delete("/api/vault/voice-memory")
+async def clear_voice_memory():
+    _write_vault_memory(CRANE_VOICE_MEMORY, [])
+    return {"status": "cleared"}
+
+@app.get("/api/vault/chat-history")
+async def get_chat_history():
+    return _read_vault_memory(CRANE_CHAT_HISTORY)
+
+@app.post("/api/vault/chat-history")
+async def save_chat_history(req: MemorySaveRequest):
+    _write_vault_memory(CRANE_CHAT_HISTORY, req.messages, req.label)
+    # also backup to HF data-lake
+    _asyncio.create_task(_hf_backup("crane_chat_history.json",
+                                     {"messages": req.messages, "label": req.label}))
+    return {"status": "ok", "count": len(req.messages)}
+
+@app.delete("/api/vault/chat-history")
+async def clear_chat_history():
+    _write_vault_memory(CRANE_CHAT_HISTORY, [])
+    return {"status": "cleared"}
+
 # ── CAT-5 Model Routing Protocol ──────────────────────────────────────────────
 import re as _cat_re
 
@@ -3455,10 +3582,10 @@ async def serve_ide():
 
 /* ── TOKENS ── */
 :root{
-  --bg:#080807;--panel:#0d0c0a;--card:#131210;--border:#2a2416;
-  --blue:#38bdf8;--purple:#a855f7;--green:#3fe0a8;--orange:#f59e0b;
-  --red:#ef4444;--text:#f0ead8;--muted:#6b5940;--nvidia:#76b900;
-  --gold:#C8A82A;--accent:#C8A82A;--gold-bright:#E8C96A;--gold-dim:#4a3e1a;
+  --bg:#08050E;--panel:#100C1A;--card:#1A1228;--border:#2A1845;
+  --blue:#C0A87C;--purple:#7C3AED;--green:#3fe0a8;--orange:#f59e0b;
+  --red:#ef4444;--text:#EDE8F0;--muted:#6B557A;--nvidia:#76b900;
+  --gold:#C8A82A;--accent:#C8A82A;--gold-bright:#E8C96A;--gold-dim:#2A1E08;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
@@ -3476,6 +3603,16 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nr-btn:hover .nr-tooltip{opacity:1;}
 .nr-spacer{flex:1;}
 .nr-divider{width:28px;height:1px;background:var(--border);margin:4px 0;}
+/* GPU mini-meter in navRail bottom */
+.nr-gpu{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0 10px;width:100%;border-top:1px solid var(--border);}
+.nr-gpu-toggle{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;line-height:1;}
+.nr-gpu-toggle:hover{border-color:var(--gold);color:var(--gold);}
+.nr-gpu-toggle.live{border-color:rgba(63,224,168,.5);color:var(--green);background:rgba(63,224,168,.08);}
+.nr-gpu-bar-wrap{width:28px;height:3px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden;}
+.nr-gpu-bar{height:100%;width:0%;background:linear-gradient(90deg,var(--green),var(--gold));transition:width 1s linear;}
+.nr-gpu-cost{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:-.3px;}
+.nr-gpu-cost.live{color:var(--green);}
+.nr-gpu-label{font-size:7px;letter-spacing:1px;color:var(--border);font-weight:700;}
 .nr-mentor{overflow:hidden;padding:0;}
 .nr-mentor-img{width:34px;height:34px;object-fit:cover;border-radius:8px;display:block;}
 .nr-mentor-fallback{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#1a1400,#2a2000);border:1px solid rgba(200,168,42,.3);display:none;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--gold);font-family:'JetBrains Mono',monospace;}
@@ -3514,7 +3651,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #main{display:flex;flex:1;overflow:hidden;}
 
 /* ── FILE SIDEBAR ── */
-#sidebar{width:210px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+#sidebar{width:210px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .15s;}
+#sidebar.collapsed{width:0;border-right:none;}
 #sideHead{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;}
 #sideHead select{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px;outline:none;}
 #fileTree{flex:1;overflow-y:auto;padding:4px 0;}
@@ -3531,7 +3669,92 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .ed-tab .tclose{opacity:.4;font-size:14px;line-height:1;}
 .ed-tab .tclose:hover{opacity:1;color:var(--red);}
 #editorWrap{flex:1;overflow:hidden;position:relative;}
-#terminal{height:180px;background:#020a0f;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;}
+#previewPane{flex:1;overflow:hidden;position:relative;display:none;background:#fff;flex-direction:column;}
+#previewPane.active{display:flex;}
+#previewBar{height:30px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 10px;flex-shrink:0;}
+#previewBar .pb-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.5px;}
+#previewBar .pb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;}
+#previewBar .pb-btn:hover{border-color:var(--gold);color:var(--gold);}
+#previewBar .pb-btn.active{border-color:var(--gold);color:var(--gold);}
+#previewFrame{flex:1;width:100%;border:none;background:#fff;}
+#previewEmpty{flex:1;display:flex;align-items:center;justify-content:center;color:#8a8478;font-family:'Inter',sans-serif;font-size:13px;text-align:center;padding:20px;}
+.ed-tab[data-tab="preview"]{gap:5px;}
+
+/* ── HOME LANDING (Claude-Design-style) ── */
+#homeLanding{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:14vh 24px 40px;background:var(--bg);}
+#homeLanding.hidden{display:none;}
+.hl-brand{display:flex;align-items:center;gap:10px;align-self:flex-start;margin-bottom:56px;}
+.hl-brand-icon{font-size:26px;filter:drop-shadow(0 0 6px rgba(200,168,42,.35));}
+.hl-brand-text{display:flex;flex-direction:column;line-height:1.15;}
+.hl-brand-name{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:19px;letter-spacing:3px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.hl-brand-sub{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;}
+.hl-headline{font-family:'Inter',serif;font-size:34px;font-weight:600;color:var(--text);margin-bottom:28px;text-align:center;letter-spacing:-.5px;}
+/* ── COMPOSER CONTEXT BAR ── */
+#ctxBar{width:100%;max-width:800px;display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:0 2px;}
+.ctx-gh-wrap{position:relative;flex:1;}
+.ctx-gh-btn{display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--border);border-radius:8px;padding:5px 10px;cursor:pointer;width:100%;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text);transition:.15s;text-align:left;}
+.ctx-gh-btn:hover{border-color:rgba(200,168,42,.4);}
+.ctx-gh-icon{font-size:11px;opacity:.7;}
+.ctx-gh-repo{font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ctx-gh-arrow{color:var(--muted);font-size:8px;flex-shrink:0;}
+.ctx-gh-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:10px;z-index:500;display:none;box-shadow:0 8px 32px rgba(0,0,0,.6);max-height:280px;overflow-y:auto;}
+.ctx-gh-menu.open{display:block;}
+.ctx-gh-head{padding:6px 10px;font-size:9px;letter-spacing:1px;color:var(--muted);font-weight:700;font-family:'JetBrains Mono',monospace;border-bottom:1px solid var(--border);}
+.ctx-gh-row{padding:7px 10px;font-size:11px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.1s;}
+.ctx-gh-row:hover{background:rgba(200,168,42,.07);color:var(--gold);}
+.ctx-gh-row .rp{font-size:8px;padding:1px 5px;border-radius:4px;}
+.ctx-gh-row .rp.priv{background:rgba(239,68,68,.15);color:#fca5a5;}
+.ctx-gh-row .rp.pub{background:rgba(63,224,168,.1);color:var(--green);}
+.ctx-gh-new{border-top:1px solid var(--border);padding:7px 10px;font-size:10px;color:var(--gold);cursor:pointer;font-weight:700;display:flex;align-items:center;gap:6px;}
+.ctx-gh-new:hover{background:rgba(200,168,42,.07);}
+.ctx-hf-chip,.ctx-gcp-chip{display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.5px;white-space:nowrap;flex-shrink:0;cursor:pointer;transition:.15s;}
+.ctx-hf-chip.live{border-color:rgba(255,160,50,.4);color:#ffb347;}
+.ctx-gcp-chip.live{border-color:rgba(66,133,244,.4);color:#7aacff;}
+.ctx-gcp-chip:hover{border-color:rgba(66,133,244,.6);}
+.ctx-lock{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;flex-shrink:0;}
+.ctx-lock:hover{border-color:var(--gold);color:var(--gold);}
+#hlComposer{width:100%;max-width:800px;background:#F2E8CC;border:1px solid rgba(200,168,42,.3);border-radius:14px;padding:16px 16px 10px;transition:.15s;margin-bottom:34px;}
+#hlComposer:focus-within{border-color:rgba(200,168,42,.7);box-shadow:0 0 0 3px rgba(200,168,42,.1);}
+#hlPromptBox{width:100%;background:transparent;border:none;outline:none;color:var(--text);font-size:14px;font-family:'Inter',sans-serif;resize:none;min-height:50px;max-height:180px;line-height:1.6;}
+#hlPromptBox::placeholder{color:var(--muted);}
+.hl-composer-row{display:flex;align-items:center;gap:8px;margin-top:10px;border:1px solid rgba(192,168,124,.28);border-radius:8px;padding:6px 8px;background:transparent;}
+.hl-icon-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;flex-shrink:0;transition:.15s;}
+.hl-icon-btn:hover{border-color:var(--gold);color:var(--gold);}
+.hl-pill{display:flex;flex-direction:column;gap:0;padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:transparent;cursor:pointer;font-size:10px;transition:.15s;}
+.hl-pill:hover{border-color:var(--gold);}
+.hl-pill-label{color:var(--muted);font-size:9px;}
+.hl-pill-value{color:var(--text);font-weight:700;font-size:11px;}
+.hl-spacer{flex:1;}
+.hl-model-pill{display:flex;flex-direction:column;padding:4px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;font-size:10px;}
+.hl-model-pill .hl-pill-value{color:var(--gold);}
+#hlSendBtn{width:32px;height:32px;border-radius:9px;border:none;background:linear-gradient(135deg,var(--gold),var(--gold-bright));color:#080807;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;flex-shrink:0;}
+#hlSendBtn:hover{opacity:.9;}
+.hl-templates-label{width:100%;max-width:800px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+.hl-templates-label:hover{color:var(--text);}
+.hl-tpl-arrow{display:inline-block;transition:transform .2s;font-style:normal;}
+.hl-tpl-arrow.open{transform:rotate(180deg);}
+.hl-templates{width:100%;max-width:800px;display:none;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:40px;}
+.hl-templates.open{display:grid;}
+.hl-tpl-card{background:transparent;border:1px solid transparent;border-radius:10px;padding:14px 10px;display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;transition:.15s;text-align:center;}
+.hl-tpl-card:hover{border-color:rgba(200,168,42,.35);}
+.hl-tpl-card.sel{border-color:var(--gold);background:rgba(200,168,42,.05);}
+.hl-tpl-icon{font-size:20px;display:flex;align-items:center;justify-content:center;}
+.hl-tpl-name{font-size:10.5px;font-weight:600;color:var(--text);}
+#hlProjects{width:100%;max-width:800px;}
+.hl-proj-tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--border);margin-bottom:0;}
+.hl-proj-tab{padding:9px 14px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;}
+.hl-proj-tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+.hl-proj-search{margin-left:auto;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;color:var(--text);outline:none;width:160px;}
+.hl-proj-row{display:flex;align-items:center;gap:12px;padding:10px 6px;border-bottom:1px solid rgba(255,255,255,.03);cursor:pointer;font-size:12px;}
+.hl-proj-row:hover{background:rgba(255,255,255,.02);}
+.hl-proj-thumb{width:44px;height:32px;border-radius:5px;background:#1c1810;flex-shrink:0;object-fit:cover;display:flex;align-items:center;justify-content:center;font-size:14px;}
+.hl-proj-name{flex:2;color:var(--text);font-weight:500;}
+.hl-proj-meta{flex:1;color:var(--muted);font-size:11px;}
+.hl-proj-empty{padding:30px 6px;color:var(--muted);font-size:12px;text-align:center;}
+#terminal{height:180px;background:#020a0f;border-top:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;transition:height .15s;}
+#terminal.collapsed{height:28px;overflow:hidden;}
+#terminal.collapsed #termOut,#terminal.collapsed #termInputRow{display:none;}
+#termHead{cursor:pointer;}
 #termHead{padding:4px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);display:flex;gap:10px;align-items:center;}
 #termOut{flex:1;overflow-y:auto;padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;}
 #termInputRow{display:flex;border-top:1px solid var(--border);flex-shrink:0;}
@@ -3545,7 +3768,9 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .ah-model-chip{font-size:9px;background:rgba(118,185,0,.12);color:var(--nvidia);padding:2px 7px;border-radius:12px;border:1px solid rgba(118,185,0,.3);margin-left:auto;font-family:'JetBrains Mono',monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
 /* ── CHAT LOG ── */
-#chatLog{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;}
+#chatLog{width:100%;max-width:800px;display:flex;flex-direction:column;gap:10px;margin-bottom:8px;}
+#chatLog:empty{display:none;}
+#chatLog .msg{width:100%;}
 #welcomeHero{padding:32px 18px 20px;text-align:center;flex-shrink:0;}
 #welcomeHero .wh-title{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:22px;letter-spacing:.5px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
 #welcomeHero .wh-sub{margin-top:6px;font-size:12px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;font-weight:600;}
@@ -3583,8 +3808,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .ctx-pill .cp-x:hover{opacity:1;}
 
 /* Textarea */
-#chatInput{background:transparent;border:none;color:var(--text);font-size:13px;font-family:'Inter',sans-serif;outline:none;resize:none;width:100%;min-height:64px;max-height:200px;padding:10px 12px;line-height:1.6;}
-#chatInput::placeholder{color:var(--muted);}
+#chatInput{background:transparent;border:none;color:#2A1F08;font-size:13px;font-family:'Inter',sans-serif;outline:none;resize:none;width:100%;min-height:64px;max-height:200px;padding:10px 12px;line-height:1.6;}
+#chatInput::placeholder{color:#9A8660;}
 
 /* Bottom toolbar */
 #composerToolbar{display:flex;align-items:center;gap:4px;padding:6px 8px;border-top:1px solid rgba(255,255,255,.04);}
@@ -3655,8 +3880,16 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #toolsMenu.open{display:block;}
 .tm-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px;cursor:pointer;font-size:11px;transition:.12s;}
 .tm-item:hover{background:rgba(255,255,255,.06);}
+.tm-item.active{background:rgba(200,168,42,.12);color:var(--gold);}
 .tm-item .ti-icon{font-size:14px;width:20px;text-align:center;}
 .tm-item .ti-key{margin-left:auto;font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
+.tm-section{font-size:9px;font-weight:700;letter-spacing:1px;color:var(--muted);padding:8px 10px 3px;text-transform:uppercase;}
+.tm-section:first-child{padding-top:4px;}
+.tm-divider{height:1px;background:var(--border);margin:4px 4px;}
+#mentionPopover{position:absolute;bottom:calc(100% + 4px);left:8px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:4px;z-index:400;display:none;min-width:240px;max-height:220px;overflow-y:auto;box-shadow:0 -6px 24px rgba(0,0,0,.5);}
+#mentionPopover.open{display:block;}
+.mp-item{display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:5px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;}
+.mp-item:hover,.mp-item.sel{background:rgba(200,168,42,.12);color:var(--gold);}
 
 /* ── MODALS ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9000;display:flex;align-items:center;justify-content:center;}
@@ -3680,6 +3913,11 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #welcomeHero .wh-greeting{font-size:11px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;font-weight:600;margin-bottom:4px;}
 #welcomeHero .wh-title{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:18px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1px;margin-bottom:12px;}
 .home-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.wh-compact{display:flex;align-items:center;justify-content:space-between;padding:9px 4px;cursor:pointer;border-bottom:1px solid var(--border);margin-bottom:6px;}
+.wh-compact-text{font-size:11px;color:var(--muted);}
+.wh-compact-text b{color:var(--gold);font-family:'JetBrains Mono',monospace;}
+.wh-more-arrow{font-size:9px;color:var(--muted);font-weight:700;letter-spacing:.5px;flex-shrink:0;}
+.wh-compact:hover .wh-more-arrow{color:var(--gold);}
 .home-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:11px 12px;cursor:pointer;transition:.15s;display:flex;flex-direction:column;gap:4px;}
 .home-card:hover{border-color:rgba(200,168,42,.35);background:#1a1500;}
 .home-card .hc-icon{font-size:16px;margin-bottom:2px;}
@@ -3728,6 +3966,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
   <!-- LEFT NAV RAIL -->
   <div id="navRail">
+    <div class="nr-btn" id="sidebarToggleBtn" onclick="toggleSidebar()" title="Files">
+      <span>📁</span><span class="nr-tooltip">FILES</span>
+    </div>
+    <div class="nr-divider"></div>
     <a href="/ide" class="nr-btn active" data-page="home" title="HOME">
       <span>⬡</span><span class="nr-tooltip">HOME</span>
     </a>
@@ -3750,10 +3992,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <span>🎛</span><span class="nr-tooltip">BIG Q</span>
     </a>
     <div class="nr-spacer"></div>
+    <!-- GPU MINI-METER -->
+    <div class="nr-gpu" id="nrGpu">
+      <button class="nr-gpu-toggle" id="nrGpuToggle" onclick="nrGpuToggle()" title="Toggle GPU ($0.40/hr · idle auto-off applies)">⏻</button>
+      <div class="nr-gpu-bar-wrap"><div class="nr-gpu-bar" id="nrGpuBar"></div></div>
+      <div class="nr-gpu-cost" id="nrGpuCost">$0.00</div>
+      <div class="nr-gpu-label" id="nrGpuLabel">GPU</div>
+    </div>
   </div>
 
   <!-- SIDEBAR -->
-  <div id="sidebar">
+  <div id="sidebar" class="collapsed">
     <div id="sideHead">
       <span style="font-size:10px;color:var(--muted);flex-shrink:0">REPO</span>
       <select id="repoSel" onchange="loadRepoTree()">
@@ -3765,14 +4014,202 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
   <!-- EDITOR -->
   <div id="editorArea">
-    <div id="tabBar"><div class="ed-tab active" id="welcomeTab">✦ welcome</div></div>
-    <div id="editorWrap"></div>
-    <div id="terminal">
-      <div id="termHead">
+    <div id="tabBar">
+      <div class="ed-tab active" id="welcomeTab" onclick="_activeTab=null;showEditorTab()">🏗 home</div>
+      <div class="ed-tab" id="previewTab" data-tab="preview" onclick="togglePreview()">◱ Live Preview</div>
+    </div>
+    <div id="editorWrap">
+      <div id="homeLanding">
+        <div class="hl-brand" style="display:none">
+          <span class="hl-brand-icon">🏗</span>
+          <div class="hl-brand-text">
+            <span class="hl-brand-name">CRANE</span>
+            <span class="hl-brand-sub">Design · Local · Sept 2026</span>
+          </div>
+        </div>
+        <div class="hl-headline" style="display:none">What should we create?</div>
+
+        <!-- CONTEXT BAR: GitHub folder · HF status · Vault lock -->
+        <div id="ctxBar">
+          <div class="ctx-gh-wrap" id="ctxGhWrap">
+            <button class="ctx-gh-btn" onclick="toggleCtxGhMenu(event)">
+              <span class="ctx-gh-icon">⎇</span>
+              <span class="ctx-gh-repo" id="ctxGhRepo">Loading repos…</span>
+              <span class="ctx-gh-arrow">▾</span>
+            </button>
+            <div class="ctx-gh-menu" id="ctxGhMenu">
+              <div class="ctx-gh-head">YOUR REPOSITORIES</div>
+              <div id="ctxGhList"></div>
+              <div class="ctx-gh-new" onclick="ctxGhNewProject()">＋ Start new project</div>
+            </div>
+          </div>
+          <div class="ctx-hf-chip" id="ctxHfChip">🤗 HF —</div>
+          <div class="ctx-gcp-chip" id="ctxGcpChip" onclick="openGCPModal()" title="Google Cloud — click to configure">☁ GCP —</div>
+          <button class="ctx-lock" onclick="toggleVault()" title="Nobility Vault">🔒</button>
+        </div>
+
+        <div id="hlComposer" style="position:relative;">
+
+          <div id="composerCtxPills"></div>
+          <div id="mentionPopover"></div>
+
+          <textarea id="chatInput" placeholder="Ask CONNIE anything… (Enter sends, Shift+Enter newline, @ to reference a file)" onkeydown="hlPromptKey(event)" oninput="updateTokenEst();classifyPrompt(this.value);handleMentionInput(event)"></textarea>
+
+          <div class="hl-composer-row">
+            <!-- Unified injection menu -->
+            <div style="position:relative;">
+              <button class="hl-icon-btn" id="injectMenuBtn" title="Attach / connect" onclick="toggleInjectMenu()">+</button>
+              <div id="injectMenu" style="position:absolute;bottom:calc(100% + 8px);left:0;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px;z-index:400;display:none;min-width:210px;box-shadow:0 -6px 24px rgba(0,0,0,.5);">
+                <div class="tm-section">Files</div>
+                <div class="tm-item" onclick="toggleVault();closeInjectMenu()"><span class="ti-icon">📎</span>Attach file</div>
+                <div class="tm-item" onclick="runToolAction('attach_folder');closeInjectMenu()"><span class="ti-icon">📂</span>Attach folder</div>
+                <div class="tm-item" onclick="openGHModal();closeInjectMenu()"><span class="ti-icon">🔗</span>Reference another project</div>
+                <div class="tm-divider"></div>
+                <div class="tm-section">Code</div>
+                <div class="tm-item" onclick="openGHModal();closeInjectMenu()"><span class="ti-icon">⎇</span>GitHub connected</div>
+                <div class="tm-item" onclick="runToolAction('link_local_code');closeInjectMenu()"><span class="ti-icon">🖥️</span>Link local code…</div>
+                <div class="tm-divider"></div>
+                <div class="tm-section">Design</div>
+                <div class="tm-item" onclick="runToolAction('open_design_system');closeInjectMenu()"><span class="ti-icon">🎨</span>Design system (DESIGN.md)</div>
+                <div class="tm-item" onclick="runToolAction('open_skills');closeInjectMenu()"><span class="ti-icon">🧩</span>Skills</div>
+                <div class="tm-item" onclick="runToolAction('manage_connectors');closeInjectMenu()"><span class="ti-icon">🔌</span>Manage connectors</div>
+              </div>
+            </div>
+
+            <div class="hl-pill" onclick="runToolAction('open_design_system')">
+              <span class="hl-pill-label">Design system</span>
+              <span class="hl-pill-value" id="hlDesignSysLabel">None</span>
+            </div>
+            <button class="hl-icon-btn" title="Code view" onclick="showEditorTab()">&lt;/&gt;</button>
+
+            <!-- Consolidated "more" menu: project, mode, context toggles, tools, GPU -->
+            <div style="position:relative;">
+              <button class="hl-icon-btn" id="hlMoreBtn" title="More" onclick="toggleHlMore()">⋯</button>
+              <div id="hlMoreMenu" style="position:absolute;bottom:calc(100% + 8px);left:0;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px;z-index:400;display:none;min-width:230px;box-shadow:0 -6px 24px rgba(0,0,0,.5);">
+                <div class="tm-section">Project</div>
+                <div class="tm-item" id="projectPill" onclick="openGHModal()"><span class="ti-icon">📁</span><span id="ppName">No project</span></div>
+
+                <div class="tm-section">Mode</div>
+                <div class="mode-group" style="margin:0 4px 6px;">
+                  <button class="mode-btn" id="modePlan" onclick="setMode('plan')">📋 Plan</button>
+                  <div class="mode-sep"></div>
+                  <button class="mode-btn active" id="modeAuto" onclick="setMode('auto')">⚙ Auto</button>
+                  <div class="mode-sep"></div>
+                  <button class="mode-btn superman" id="modeSuper" onclick="setMode('superman')">⚡ Superman</button>
+                </div>
+                <div id="modeHint" style="padding:0 6px 6px;font-size:9px;">Auto: acts autonomously, pauses before destructive changes</div>
+
+                <div class="tm-divider"></div>
+                <div class="tm-section">Include as context</div>
+                <div class="tm-item" id="toolTerm" onclick="toggleToolCtx('term','toolTerm')"><span class="ti-icon">🖥️</span>Terminal output</div>
+                <div class="tm-item" id="toolVault" onclick="toggleVault()"><span class="ti-icon">🔐</span>Nobility Vault</div>
+                <div class="tm-item" id="toolCode" onclick="toggleToolCtx('code','toolCode')"><span class="ti-icon">&lt;/&gt;</span>Open file</div>
+                <div class="tm-item" id="toolGit" onclick="toggleToolCtx('git','toolGit')"><span class="ti-icon">⎇</span>Git diff</div>
+
+                <div class="tm-divider"></div>
+                <div class="tm-section">Tools</div>
+                <div class="tm-item" onclick="runToolAction('write_file')"><span class="ti-icon">💾</span>Write file to repo<span class="ti-key">Ctrl+S</span></div>
+                <div class="tm-item" onclick="runToolAction('read_file')"><span class="ti-icon">📂</span>Read file from repo</div>
+                <div class="tm-item" onclick="runToolAction('run_tests')"><span class="ti-icon">🧪</span>Run tests</div>
+                <div class="tm-item" onclick="runToolAction('git_status')"><span class="ti-icon">⎇</span>Git status</div>
+                <div class="tm-item" onclick="runToolAction('git_diff')"><span class="ti-icon">📊</span>Git diff</div>
+                <div class="tm-item" onclick="runToolAction('git_log')"><span class="ti-icon">📜</span>Git log</div>
+                <div class="tm-item" onclick="runToolAction('install_deps')"><span class="ti-icon">📦</span>Install dependencies</div>
+                <div class="tm-item" onclick="runToolAction('start_server')"><span class="ti-icon">🚀</span>Start dev server</div>
+                <div class="tm-item" onclick="runToolAction('clear_chat')"><span class="ti-icon">🗑</span>Clear conversation</div>
+
+                <div class="tm-divider"></div>
+                <div class="tm-item"><span class="ti-icon">📶</span>Routing<span class="ti-key" id="catBadge">CAT-?</span></div>
+                <div class="tm-item" id="gpuSpinBtn" onclick="requestGpuSpin()" style="display:none;"><span class="ti-icon">🔥</span>Fire GPU $0.40/hr</div>
+              </div>
+            </div>
+
+            <div class="hl-spacer"></div>
+
+            <!-- Real model selector (populated by JS) -->
+            <div id="modelDropWrapper">
+              <div id="modelDisplay" onclick="toggleModelMenu()">
+                <span class="mo-tag tag-code md-tag">CODE</span>
+                <span class="md-name" id="mdName">select model…</span>
+                <span class="md-arrow">▾</span>
+              </div>
+              <div id="modelMenu"></div>
+            </div>
+
+            <span style="font-size:10px;color:var(--muted);flex-shrink:0;" id="tokenEst"></span>
+            <button id="hlSendBtn" onclick="hlSend()">↑</button>
+          </div>
+        </div>
+
+        <div id="chatLog">
+          <div id="welcomeHero" style="display:none">
+            <div class="wh-compact" onclick="toggleWelcomeMore()">
+              <span class="wh-compact-text">Good to see you, TJ — <b>CONNIE CODE</b></span>
+              <span class="wh-more-arrow" id="whMoreArrow">▾ more</span>
+            </div>
+            <div class="home-cards" id="whMoreCards" style="display:none">
+              <div class="home-card" onclick="openGHModal()">
+                <div class="hc-icon">⎇</div>
+                <div class="hc-label">OPEN PROJECT</div>
+                <div class="hc-sub">Connect a GitHub repo to start coding</div>
+              </div>
+              <div class="home-card" onclick="window.location='/studio'">
+                <div class="hc-icon">🎙</div>
+                <div class="hc-label">VOICE STUDIO</div>
+                <div class="hc-sub">Clone voices, mix, BIG Q mastering</div>
+              </div>
+              <div class="home-card home-card-mentor" onclick="window.location='/ide'">
+                <div class="hc-mentor-wrap">
+                  <img src="/static/ilya.jpg" class="hc-mentor-img" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                  <div class="hc-mentor-fallback">IS</div>
+                </div>
+                <div class="hc-label">DESIGN STUDIO</div>
+                <div class="hc-sub">Ilya Sutskever · Open Design · IDE</div>
+              </div>
+              <div class="home-card" onclick="window.location='/images'">
+                <div class="hc-icon">🎬</div>
+                <div class="hc-label">IMAGES</div>
+                <div class="hc-sub">MiniMax-H3 · ZeroGPU · video gen</div>
+              </div>
+            </div>
+            <div class="home-recents" id="homeRecents" style="display:none">
+              <div class="home-recents-label">RECENT REPOS</div>
+              <div id="recentRepoList"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hl-templates-label" onclick="toggleTplGrid()"><i class="hl-tpl-arrow" id="tplArrow">▾</i> CHOOSE A TEMPLATE</div>
+        <div class="hl-templates" id="hlTemplates"></div>
+        <div id="hlProjects">
+          <div class="hl-proj-tabs">
+            <div class="hl-proj-tab active" data-t="projects" onclick="hlProjTab('projects')">Projects</div>
+            <div class="hl-proj-tab" data-t="systems" onclick="hlProjTab('systems')">Design systems</div>
+            <div class="hl-proj-tab" data-t="templates" onclick="hlProjTab('templates')">Templates</div>
+            <input class="hl-proj-search" id="hlProjSearch" placeholder="Search" oninput="renderHlProjects()">
+          </div>
+          <div id="hlProjList"></div>
+        </div>
+      </div>
+      <div id="cmContainer" style="display:none;position:absolute;inset:0;"></div>
+    </div>
+    <div id="previewPane">
+      <div id="previewBar">
+        <span class="pb-label">LIVE RENDER CANVAS</span>
+        <span style="flex:1"></span>
+        <button class="pb-btn" id="pbInspect" onclick="togglePreviewInspect()">⌖ inspect</button>
+        <button class="pb-btn" onclick="refreshPreview()">↻ refresh</button>
+      </div>
+      <div id="previewEmpty">Ask CONNIE for HTML/CSS/JS and the live render shows here.<br>Or open a .html file and click Live Preview.</div>
+      <iframe id="previewFrame" sandbox="allow-scripts allow-forms" style="display:none"></iframe>
+    </div>
+    <div id="terminal" class="collapsed">
+      <div id="termHead" onclick="toggleTerminal(event)">
+        <span id="termToggleArrow" style="color:var(--muted);font-size:9px">▸</span>
         <span style="color:var(--green);font-weight:700;font-size:11px">TERMINAL</span>
         <span id="termCwdDisplay" style="color:var(--muted);font-size:10px">/home/hunt</span>
         <span style="flex:1"></span>
-        <button style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer" onclick="clearTerm()">clear</button>
+        <button style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer" onclick="event.stopPropagation();clearTerm()">clear</button>
       </div>
       <div id="termOut"></div>
       <div id="termInputRow">
@@ -3783,151 +4220,24 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   </div>
 
   <!-- AGENT PANEL -->
-  <div id="agentPanel" style="position:relative;">
-    <div id="agentHead">
-      <span>⬡</span>
-      <span class="ah-title">CONNIE&nbsp;CODE</span>
-      <span class="ah-model-chip" id="agentModelChip">select model</span>
-    </div>
-    <div id="chatLog">
-      <div id="welcomeHero">
-        <div class="wh-greeting">Good to see you, TJ</div>
-        <div class="wh-title">CONNIE CODE</div>
-        <div class="home-cards">
-          <div class="home-card" onclick="openGHModal()">
-            <div class="hc-icon">⎇</div>
-            <div class="hc-label">OPEN PROJECT</div>
-            <div class="hc-sub">Connect a GitHub repo to start coding</div>
-          </div>
-          <div class="home-card" onclick="window.location='/studio'">
-            <div class="hc-icon">🎙</div>
-            <div class="hc-label">VOICE STUDIO</div>
-            <div class="hc-sub">Clone voices, mix, BIG Q mastering</div>
-          </div>
-          <div class="home-card home-card-mentor" onclick="window.location='/ide'">
-            <div class="hc-mentor-wrap">
-              <img src="/static/ilya.jpg" class="hc-mentor-img" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-              <div class="hc-mentor-fallback">IS</div>
-            </div>
-            <div class="hc-label">DESIGN STUDIO</div>
-            <div class="hc-sub">Ilya Sutskever · Open Design · IDE</div>
-          </div>
-          <div class="home-card" onclick="window.location='/images'">
-            <div class="hc-icon">🎬</div>
-            <div class="hc-label">IMAGES</div>
-            <div class="hc-sub">MiniMax-H3 · ZeroGPU · video gen</div>
-          </div>
-        </div>
-        <div class="home-recents" id="homeRecents" style="display:none">
-          <div class="home-recents-label">RECENT REPOS</div>
-          <div id="recentRepoList"></div>
-        </div>
-      </div>
-      <div class="msg sys">CRANE IDE is live — select model, open a repo, let's build.</div>
-    </div>
 
-    <!-- ════ CLAUDE-STYLE COMPOSER ════ -->
-    <div id="composer">
-
-      <!-- Row 1: Project + Mode -->
-      <div id="composerTopBar">
-        <div id="projectPill" onclick="openGHModal()">
-          <span class="pp-icon">📁</span>
-          <span class="pp-name" id="ppName">No project</span>
-        </div>
-
-        <div class="mode-group">
-          <button class="mode-btn" id="modePlan" onclick="setMode('plan')">📋 Plan</button>
-          <div class="mode-sep"></div>
-          <button class="mode-btn active" id="modeAuto" onclick="setMode('auto')">⚙ Auto</button>
-          <div class="mode-sep"></div>
-          <button class="mode-btn superman" id="modeSuper" onclick="setMode('superman')">⚡ Superman</button>
-        </div>
-        <span id="catBadge">CAT-?</span>
-        <button id="gpuSpinBtn" onclick="requestGpuSpin()">🔥 Fire GPU $0.40/hr</button>
-      </div>
-      <div id="modeHint">Auto: acts autonomously, pauses before destructive changes</div>
-
-      <!-- Context pills (added dynamically) -->
-      <div id="composerCtxPills"></div>
-
-      <!-- Textarea -->
-      <textarea id="chatInput" placeholder="Ask CONNIE CODE anything… (Enter sends, Shift+Enter newline)" onkeydown="chatKey(event)" oninput="updateTokenEst();classifyPrompt(this.value)"></textarea>
-
-      <!-- Bottom toolbar -->
-      <div id="composerToolbar">
-
-        <!-- Attach file -->
-        <div class="tool-icon" title="Attach file from vault" onclick="toggleVault()">📎</div>
-
-        <!-- Terminal ctx -->
-        <div class="tool-icon" id="toolTerm" title="Include terminal output" onclick="toggleToolCtx('term','toolTerm')">🖥️</div>
-
-        <!-- Vault -->
-        <div class="tool-icon vault-icon" id="toolVault" title="Open Nobility Vault" onclick="toggleVault()">🔐</div>
-
-        <!-- Code ctx -->
-        <div class="tool-icon" id="toolCode" title="Include open file" onclick="toggleToolCtx('code','toolCode')">&lt;/&gt;</div>
-
-        <!-- Git diff -->
-        <div class="tool-icon" id="toolGit" title="Include git diff" onclick="toggleToolCtx('git','toolGit')">⎇</div>
-
-        <!-- Tools menu -->
-        <div style="position:relative;">
-          <div class="tool-icon" id="toolMenuBtn" title="Tools" onclick="toggleToolsMenu()">🧰</div>
-          <div id="toolsMenu">
-            <div class="tm-item" onclick="runToolAction('write_file')"><span class="ti-icon">💾</span>Write file to repo<span class="ti-key">Ctrl+S</span></div>
-            <div class="tm-item" onclick="runToolAction('read_file')"><span class="ti-icon">📂</span>Read file from repo</div>
-            <div class="tm-item" onclick="runToolAction('run_tests')"><span class="ti-icon">🧪</span>Run tests</div>
-            <div class="tm-item" onclick="runToolAction('git_status')"><span class="ti-icon">⎇</span>Git status</div>
-            <div class="tm-item" onclick="runToolAction('git_diff')"><span class="ti-icon">📊</span>Git diff</div>
-            <div class="tm-item" onclick="runToolAction('git_log')"><span class="ti-icon">📜</span>Git log</div>
-            <div class="tm-item" onclick="runToolAction('install_deps')"><span class="ti-icon">📦</span>Install dependencies</div>
-            <div class="tm-item" onclick="runToolAction('start_server')"><span class="ti-icon">🚀</span>Start dev server</div>
-            <div class="tm-item" onclick="runToolAction('clear_chat')"><span class="ti-icon">🗑</span>Clear conversation</div>
-          </div>
-        </div>
-
-        <div class="tool-sep"></div>
-
-        <!-- Model selector -->
-        <div id="modelDropWrapper">
-          <div id="modelDisplay" onclick="toggleModelMenu()">
-            <span class="mo-tag tag-code md-tag">CODE</span>
-            <span class="md-name" id="mdName">select model…</span>
-            <span class="md-arrow">▾</span>
-          </div>
-          <div id="modelMenu">
-            <!-- populated by JS -->
-          </div>
-        </div>
-
-        <div class="tool-sep"></div>
-
-        <!-- Token est + send -->
-        <span style="font-size:10px;color:var(--muted);flex-shrink:0;" id="tokenEst"></span>
-        <button id="sendBtn" onclick="sendChat()">Send ↑</button>
-      </div>
-    </div><!-- end composer -->
-
-    <!-- VAULT PANEL (slides up inside agent panel) -->
-    <div id="vaultPanel">
-      <div id="vaultHead">
-        <span>🔐</span>
-        <span class="vault-title">NOBILITY VAULT</span>
-        <input id="vaultSearch" placeholder="search voices…" oninput="filterVault()" style="max-width:140px;">
-        <button id="vaultClose" onclick="toggleVault()">×</button>
-      </div>
-      <div id="vaultList"></div>
-      <div id="vaultFooter">
-        <button class="vault-act" onclick="runCmd('ls -la /mnt/NOBILITY_VAULT/voice_vault/ 2>/dev/null || ls ~/voice_vault 2>/dev/null')">🔍 Browse vault dir</button>
-        <button class="vault-act" onclick="injectVaultPath()">📎 Add selected to context</button>
-        <button class="vault-act" onclick="window.location='/bigq'">🎙 Open BIG Q</button>
-      </div>
-    </div>
-
-  </div><!-- end agentPanel -->
 </div><!-- end main -->
+
+<!-- VAULT PANEL (bottom sheet, full width) -->
+<div id="vaultPanel">
+  <div id="vaultHead">
+    <span>🔐</span>
+    <span class="vault-title">NOBILITY VAULT</span>
+    <input id="vaultSearch" placeholder="search voices…" oninput="filterVault()" style="max-width:140px;">
+    <button id="vaultClose" onclick="toggleVault()">×</button>
+  </div>
+  <div id="vaultList"></div>
+  <div id="vaultFooter">
+    <button class="vault-act" onclick="runCmd('ls -la /mnt/NOBILITY_VAULT/voice_vault/ 2>/dev/null || ls ~/voice_vault 2>/dev/null')">🔍 Browse vault dir</button>
+    <button class="vault-act" onclick="injectVaultPath()">📎 Add selected to context</button>
+    <button class="vault-act" onclick="window.location='/bigq'">🎙 Open BIG Q</button>
+  </div>
+</div>
 
 <!-- GITHUB MODAL -->
 <div id="ghModal" class="modal-overlay" style="display:none">
@@ -4052,7 +4362,7 @@ let _modelMenuOpen = false;
 
 // ── EDITOR ─────────────────────────────────────────────────────────────────
 function initEditor() {
-  const wrap = document.getElementById('editorWrap');
+  const wrap = document.getElementById('cmContainer');
   _editor = CodeMirror(wrap, {
     value: `// Welcome to CRANE IDE\n// Powered by NVIDIA NIM — your model, your rules\n\nconsole.log("CRANE is ready.");`,
     mode: 'javascript',
@@ -4117,7 +4427,6 @@ function selectModel(id, tag, name, cat, isAuto) {
   const tagEl = document.querySelector('#modelDisplay .md-tag');
   tagEl.className = `mo-tag tag-${tag} md-tag`;
   tagEl.textContent = TAG_LABELS[tag] || tag.toUpperCase();
-  document.getElementById('agentModelChip').textContent = name.slice(0,24);
   _modelMenuOpen = false;
   document.getElementById('modelMenu').classList.remove('open');
   if (isAuto) appendMsg('sys', `CAT-${cat} → auto-routed to ${name}`);
@@ -4242,11 +4551,12 @@ function addVaultCtxPill(fname) {
 
 // ── TOOLS MENU ACTIONS ─────────────────────────────────────────────────────
 function toggleToolsMenu() {
-  document.getElementById('toolsMenu').classList.toggle('open');
+  document.getElementById('toolsMenu')?.classList.toggle('open');
 }
 
 async function runToolAction(action) {
-  document.getElementById('toolsMenu').classList.remove('open');
+  document.getElementById('toolsMenu')?.classList.remove('open');
+  document.getElementById('hlMoreMenu').style.display='none';
   const cmds = {
     git_status: 'git status',
     git_diff: 'git diff HEAD',
@@ -4259,6 +4569,49 @@ async function runToolAction(action) {
   if(action === 'write_file') saveCurrentFile();
   if(action === 'read_file') { const p=prompt('File path in repo:'); if(p) openGHFile(p); }
   if(action === 'clear_chat') clearChat();
+  if(action === 'attach_folder') { const p=prompt('Local folder path to attach as context:'); if(p) addCtxPill('folder',p); }
+  if(action === 'link_local_code') { const p=prompt('Local path to link (file or repo dir):'); if(p) addCtxPill('code',p); }
+  if(action === 'open_design_system') runCmd('cat DESIGN.md 2>/dev/null || echo "No DESIGN.md yet — run token extraction from a project folder."');
+  if(action === 'open_skills') appendMsg('sys','Skills: local .claude/skills/ folder — ask CONNIE to list or create one.');
+  if(action === 'manage_connectors') runCmd('cat /home/hunt/open-design/.od/mcp-config.json 2>/dev/null || echo "No MCP connectors configured yet."');
+}
+
+// ── INJECTION MENU (+) ────────────────────────────────────────────────────
+function toggleInjectMenu(){ document.getElementById('injectMenu').style.display = document.getElementById('injectMenu').style.display==='block'?'none':'block'; }
+function closeInjectMenu(){ document.getElementById('injectMenu').style.display='none'; }
+document.addEventListener('click',function(e){
+  const menu=document.getElementById('injectMenu'), btn=document.getElementById('injectMenuBtn');
+  if(menu && menu.style.display==='block' && !menu.contains(e.target) && e.target!==btn) closeInjectMenu();
+});
+
+// ── @ FILE MENTIONS ────────────────────────────────────────────────────────
+let _mentionFiles=[];
+function refreshMentionFileList(){
+  _mentionFiles=Object.keys(_tabs||{});
+  document.querySelectorAll('.ft-item').forEach(el=>{ if(el.dataset && el.dataset.path) _mentionFiles.push(el.dataset.path); });
+  _mentionFiles=[...new Set(_mentionFiles)];
+}
+function handleMentionInput(e){
+  const inp=e.target, val=inp.value, pos=inp.selectionStart;
+  const upToCursor=val.slice(0,pos);
+  const m=upToCursor.match(/@([\w./-]*)$/);
+  const pop=document.getElementById('mentionPopover');
+  if(!m){ pop.classList.remove('open'); return; }
+  refreshMentionFileList();
+  const q=m[1].toLowerCase();
+  const matches=_mentionFiles.filter(f=>f.toLowerCase().includes(q)).slice(0,8);
+  if(!matches.length){ pop.classList.remove('open'); return; }
+  pop.innerHTML=matches.map((f,i)=>`<div class="mp-item${i===0?' sel':''}" onclick="insertMention('${f.replace(/'/g,"\\'")}')">📄 ${f}</div>`).join('');
+  pop.classList.add('open');
+}
+function insertMention(path){
+  const inp=document.getElementById('chatInput'), val=inp.value, pos=inp.selectionStart;
+  const upToCursor=val.slice(0,pos);
+  const newUpTo=upToCursor.replace(/@([\w./-]*)$/, '@'+path+' ');
+  inp.value=newUpTo+val.slice(pos);
+  document.getElementById('mentionPopover').classList.remove('open');
+  addCtxPill('code',path);
+  inp.focus();
 }
 
 // ── TOKEN ESTIMATE ─────────────────────────────────────────────────────────
@@ -4426,6 +4779,189 @@ async function openGHFile(path) {
   document.querySelectorAll('.ft-item').forEach(el=>el.classList.toggle('active',el.textContent.includes(path.split('/').pop())));
 }
 
+// ── DECLUTTER TOGGLES ────────────────────────────────────────────────────────
+function toggleSidebar(){
+  const sb=document.getElementById('sidebar');
+  sb.classList.toggle('collapsed');
+  document.getElementById('sidebarToggleBtn').classList.toggle('active', !sb.classList.contains('collapsed'));
+}
+function toggleTerminal(e){
+  const t=document.getElementById('terminal');
+  t.classList.toggle('collapsed');
+  document.getElementById('termToggleArrow').textContent = t.classList.contains('collapsed') ? '▸' : '▾';
+}
+function toggleWelcomeMore(){
+  const cards=document.getElementById('whMoreCards');
+  const isOpen=cards.style.display!=='none';
+  cards.style.display=isOpen?'none':'grid';
+  document.getElementById('whMoreArrow').textContent=isOpen?'▾ more':'▴ less';
+}
+
+// ── LIVE RENDER CANVAS ───────────────────────────────────────────────────────
+let _previewActive=false, _previewInspect=false;
+function showEditorTab(){
+  _previewActive=false;
+  document.getElementById('previewPane').classList.remove('active');
+  document.getElementById('editorWrap').style.display='block';
+  document.getElementById('previewTab').classList.remove('active');
+  document.querySelectorAll('.ed-tab').forEach(t=>{ if(t.id!=='previewTab') t.classList.toggle('active', t.id===('tab_'+btoa(_activeTab||''))||t.id==='welcomeTab'&&!_activeTab); });
+  if(_activeTab && _tabs[_activeTab]){
+    document.getElementById('homeLanding').classList.add('hidden');
+    document.getElementById('cmContainer').style.display='block';
+    _editor.refresh();
+  } else {
+    document.getElementById('homeLanding').classList.remove('hidden');
+    document.getElementById('cmContainer').style.display='none';
+  }
+}
+function togglePreview(){
+  _previewActive=true;
+  document.getElementById('previewPane').classList.add('active');
+  document.getElementById('editorWrap').style.display='none';
+  document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('previewTab').classList.add('active');
+  refreshPreview();
+}
+function renderPreview(html){
+  const frame=document.getElementById('previewFrame');
+  const empty=document.getElementById('previewEmpty');
+  if(!html){ frame.style.display='none'; empty.style.display='flex'; return; }
+  empty.style.display='none'; frame.style.display='block';
+  frame.srcdoc=html;
+  document.getElementById('previewPane').classList.add('active');
+  document.getElementById('editorWrap').style.display='none';
+  document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('previewTab').classList.add('active');
+  _previewActive=true;
+}
+function refreshPreview(){
+  if(_activeTab && /\.html?$/i.test(_activeTab) && _tabs[_activeTab]){
+    renderPreview(_tabs[_activeTab].content);
+  } else if(window._lastRenderedHtml){
+    renderPreview(window._lastRenderedHtml);
+  } else {
+    document.getElementById('previewFrame').style.display='none';
+    document.getElementById('previewEmpty').style.display='flex';
+  }
+}
+function togglePreviewInspect(){
+  _previewInspect=!_previewInspect;
+  document.getElementById('pbInspect').classList.toggle('active',_previewInspect);
+  const frame=document.getElementById('previewFrame');
+  try{
+    const doc=frame.contentDocument;
+    if(!doc) return;
+    if(_previewInspect){
+      doc.body.style.cursor='crosshair';
+      doc._inspectHandler=function(e){
+        e.preventDefault(); e.stopPropagation();
+        const el=e.target; const sel=el.tagName.toLowerCase()+(el.id?'#'+el.id:'')+(el.className&&typeof el.className==='string'?'.'+el.className.split(' ').join('.'):'');
+        injectPrompt(`Isolate and edit this element: ${sel}\n`);
+      };
+      doc.addEventListener('click',doc._inspectHandler,true);
+    } else {
+      doc.body.style.cursor='';
+      if(doc._inspectHandler) doc.removeEventListener('click',doc._inspectHandler,true);
+    }
+  }catch(e){}
+}
+// Extracts the last fenced ```html block from an assistant message and pipes it to the live canvas
+function extractAndRenderHtml(text){
+  const m=text.match(/```html\s*([\s\S]*?)```/i);
+  if(m){ window._lastRenderedHtml=m[1]; renderPreview(m[1]); return true; }
+  return false;
+}
+
+// ── HOME LANDING (Claude-Design-style) ──────────────────────────────────────
+const HL_TEMPLATES=[
+  {id:'blank',icon:'▢',name:'Blank',prompt:''},
+  {id:'mobile',icon:'📱',name:'Mobile app design',prompt:'Design a mobile app screen: '},
+  {id:'slides',icon:'▤',name:'Slides',prompt:'Build a slide deck as HTML: '},
+  {id:'doc',icon:'📄',name:'Document',prompt:'Write a document: '},
+  {id:'wireframe',icon:'⬚',name:'Wireframe',prompt:'Build a lo-fi wireframe (HTML) for: '},
+  {id:'animation',icon:'▶',name:'Animation',prompt:'Build an animated HTML/CSS component: '},
+  {id:'uimock',icon:'🖼',name:'UI mockups',prompt:'Design a UI mockup (HTML/CSS) for: '},
+  {id:'resume',icon:'📋',name:'Résumé',prompt:'Build a résumé as HTML: '},
+  {id:'3d',icon:'◆',name:'3D object',prompt:'Build a 3D object using CSS transforms or WebGL for: '},
+  {id:'research',icon:'🔍',name:'Research',prompt:'Research and summarize: '},
+  {id:'email',icon:'✉',name:'HTML email',prompt:'Build an HTML email template for: '},
+  {id:'colortype',icon:'Aa',name:'Color + type pairing',prompt:'Propose a color palette and type pairing for: '},
+];
+let _hlSelectedTpl='blank';
+function toggleTplGrid(){
+  const grid=document.getElementById('hlTemplates');
+  const arrow=document.getElementById('tplArrow');
+  const open=grid.classList.toggle('open');
+  arrow.classList.toggle('open',open);
+}
+function renderHlTemplates(){
+  const grid=document.getElementById('hlTemplates');
+  if(!grid) return;
+  grid.innerHTML=HL_TEMPLATES.map(t=>`
+    <div class="hl-tpl-card${t.id===_hlSelectedTpl?' sel':''}" onclick="hlPickTemplate('${t.id}')">
+      <div class="hl-tpl-icon">${t.icon}</div>
+      <div class="hl-tpl-name">${t.name}</div>
+    </div>`).join('');
+}
+function hlPickTemplate(id){
+  _hlSelectedTpl=id;
+  renderHlTemplates();
+  const t=HL_TEMPLATES.find(x=>x.id===id);
+  const box=document.getElementById('chatInput');
+  if(t && t.prompt){ box.value=t.prompt; box.focus(); box.setSelectionRange(box.value.length,box.value.length); }
+}
+function hlPromptKey(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); hlSend(); } }
+function hlSend(){
+  const box=document.getElementById('chatInput');
+  const txt=box.value.trim();
+  if(!txt){ box.focus(); return; }
+  hlLogProject(txt.slice(0,60));
+  sendChat();
+}
+function toggleHlMore(){ const m=document.getElementById('hlMoreMenu'); m.style.display=m.style.display==='block'?'none':'block'; }
+document.addEventListener('click',function(e){
+  const m=document.getElementById('hlMoreMenu'), btn=document.getElementById('hlMoreBtn');
+  if(m && m.style.display==='block' && !m.contains(e.target) && e.target!==btn) m.style.display='none';
+});
+let _hlProjTab='projects';
+function hlProjTab(t){
+  _hlProjTab=t;
+  document.querySelectorAll('.hl-proj-tab').forEach(el=>el.classList.toggle('active',el.dataset.t===t));
+  renderHlProjects();
+}
+async function hlLogProject(name){
+  try{
+    await fetch('/api/ide/projects',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name||'Untitled design',template:_hlSelectedTpl})});
+    renderHlProjects();
+  }catch(e){}
+}
+async function renderHlProjects(){
+  const list=document.getElementById('hlProjList');
+  if(!list) return;
+  if(_hlProjTab==='systems'){
+    list.innerHTML='<div class="hl-proj-empty">No design systems yet — click "Design system" in the composer to create one from your codebase tokens.</div>';
+    return;
+  }
+  if(_hlProjTab==='templates'){
+    list.innerHTML='<div class="hl-proj-empty">Templates live above — pick one to start.</div>';
+    return;
+  }
+  try{
+    const r=await fetch('/api/ide/projects');
+    const d=await r.json();
+    const q=(document.getElementById('hlProjSearch')?.value||'').toLowerCase();
+    const rows=(d.projects||[]).filter(p=>p.name.toLowerCase().includes(q));
+    if(!rows.length){ list.innerHTML='<div class="hl-proj-empty">No projects yet — describe something above to start your first one.</div>'; return; }
+    list.innerHTML=rows.map(p=>`
+      <div class="hl-proj-row">
+        <div class="hl-proj-thumb">${HL_TEMPLATES.find(t=>t.id===p.template)?.icon||'▢'}</div>
+        <div class="hl-proj-name">${p.name}</div>
+        <div class="hl-proj-meta">${p.when||''}</div>
+      </div>`).join('');
+  }catch(e){ list.innerHTML='<div class="hl-proj-empty">No projects yet.</div>'; }
+}
+
 // ── TABS ───────────────────────────────────────────────────────────────────
 function addTab(path){
   const bar=document.getElementById('tabBar'); const fname=path.split('/').pop();
@@ -4440,6 +4976,11 @@ function setActiveTab(path){
   document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab_'+btoa(path))?.classList.add('active');
   if(_tabs[path]) _editor.setValue(_tabs[path].content||'');
+  document.getElementById('homeLanding').classList.add('hidden');
+  document.getElementById('cmContainer').style.display='block';
+  document.getElementById('previewPane').classList.remove('active');
+  document.getElementById('editorWrap').style.display='block';
+  _editor.refresh();
 }
 function closeTab(path,e){
   e.stopPropagation();
@@ -4550,6 +5091,11 @@ async function sendChat(){
     const reply=d.content;
     _messages.push({role:'assistant',content:reply});
     appendMsg('agent',reply);
+    // persist chat history to Nobility Vault after every exchange
+    fetch('/api/vault/chat-history',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:_messages,label:_repoName||''})}).catch(()=>{});
+    // auto-render any HTML/CSS/JS block straight into the Live Render Canvas
+    extractAndRenderHtml(reply);
     // auto-extract code offer
     const codeMatch=reply.match(/```(?:\w+)?\n?([\s\S]+?)```/);
     if(codeMatch&&_editor){
@@ -4565,8 +5111,135 @@ async function sendChat(){
 }
 
 // ── INIT ───────────────────────────────────────────────────────────────────
+// ── CONTEXT BAR — GitHub folder + HF status ────────────────────────────────
+let _ctxGhMenuOpen=false;
+async function loadCtxGh(){
+  const label=document.getElementById('ctxGhRepo');
+  const list=document.getElementById('ctxGhList');
+  try{
+    const r=await fetch('/api/ide/github/repos'); const d=await r.json();
+    if(d.error){
+      label.textContent='GitHub — add token in 🔒 Vault';
+      label.style.color='var(--muted)';
+      list.innerHTML=`<div style="padding:8px 10px;font-size:11px;color:var(--muted)">Add GITHUB_TOKEN in the Vault to see your repos.</div>`;
+      return;
+    }
+    const repos=d.repos||[];
+    label.textContent=repos.length?'Select a project…':'No repos found';
+    label.style.color='';
+    // also populate sidebar select
+    const sel=document.getElementById('repoSel');
+    if(sel){ sel.innerHTML='<option value="">— pick repo —</option>'; }
+    list.innerHTML='';
+    repos.forEach(repo=>{
+      if(sel){ const opt=document.createElement('option'); opt.value=repo.full_name; opt.textContent=repo.full_name; sel.appendChild(opt); }
+      const row=document.createElement('div'); row.className='ctx-gh-row';
+      const priv=repo.private?'<span class="rp priv">priv</span>':'<span class="rp pub">pub</span>';
+      const lang=repo.language?`<span style="margin-left:auto;font-size:9px;color:var(--muted)">${repo.language}</span>`:'';
+      row.innerHTML=priv+' <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+repo.full_name+'</span>'+lang;
+      row.onclick=()=>ctxGhPickRepo(repo.full_name,repo.name);
+      list.appendChild(row);
+    });
+  }catch(e){ label.textContent='GitHub offline'; label.style.color='var(--muted)'; }
+}
+function toggleCtxGhMenu(e){
+  e.stopPropagation();
+  _ctxGhMenuOpen=!_ctxGhMenuOpen;
+  document.getElementById('ctxGhMenu').classList.toggle('open',_ctxGhMenuOpen);
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#ctxGhWrap')&&_ctxGhMenuOpen){
+    _ctxGhMenuOpen=false; document.getElementById('ctxGhMenu')?.classList.remove('open');
+  }
+});
+function ctxGhPickRepo(fullName,name){
+  document.getElementById('ctxGhRepo').textContent='⎇  '+fullName;
+  document.getElementById('ctxGhRepo').style.color='var(--gold)';
+  _ctxGhMenuOpen=false; document.getElementById('ctxGhMenu').classList.remove('open');
+  // wire into sidebar
+  const sel=document.getElementById('repoSel'); if(sel) sel.value=fullName;
+  document.getElementById('ppName').textContent=name;
+  [_repoOwner,_repoName]=fullName.split('/');
+  loadRepoTree();
+  // show sidebar
+  const sb=document.getElementById('sidebar'); if(sb&&sb.classList.contains('collapsed')) toggleSidebar();
+}
+function ctxGhNewProject(){
+  _ctxGhMenuOpen=false; document.getElementById('ctxGhMenu').classList.remove('open');
+  openGHModal();
+}
+async function loadCtxHfStatus(){
+  try{
+    const r=await fetch('/api/keys/status'); const d=await r.json();
+    const chip=document.getElementById('ctxHfChip');
+    const ok=d.providers?.hf;
+    chip.textContent=ok?'🤗 HF connected':'🤗 HF offline';
+    chip.className='ctx-hf-chip'+(ok?' live':'');
+    chip.title=ok?'HuggingFace token active in Nobility Vault':'Add HF_TOKEN in Vault (🔒)';
+  }catch(e){}
+}
+async function loadCtxGcpStatus(){
+  try{
+    const r=await fetch('/api/ide/gcp/status'); const d=await r.json();
+    const chip=document.getElementById('ctxGcpChip');
+    if(d.configured){
+      chip.textContent='☁ '+d.project_id;
+      chip.className='ctx-gcp-chip live';
+      chip.title=`GCP: ${d.project_id} · ${d.region} · click to configure`;
+    } else {
+      chip.textContent='☁ GCP offline';
+      chip.className='ctx-gcp-chip';
+      chip.title='Google Cloud not configured — click to set up';
+    }
+  }catch(e){}
+}
+
+// ── IDE GPU MINI-METER ──────────────────────────────────────────────────────
+let _ideGpu={running:false};
+async function nrRefreshGpu(){
+  try{
+    const r=await fetch('/api/gpu/meter'); const d=await r.json();
+    _ideGpu=d;
+    const toggle=document.getElementById('nrGpuToggle');
+    const cost=document.getElementById('nrGpuCost');
+    const bar=document.getElementById('nrGpuBar');
+    const lbl=document.getElementById('nrGpuLabel');
+    if(d.running){
+      toggle.className='nr-gpu-toggle live';
+      toggle.title=`GPU ON · $${(d.session_cost||0).toFixed(4)} · idle auto-off`;
+      cost.className='nr-gpu-cost live';
+      cost.textContent='$'+(d.session_cost||0).toFixed(3);
+      const frac=Math.min(1,(d.idle_seconds||0)/(d.idle_timeout||600));
+      bar.style.width=(frac*100)+'%';
+      const left=Math.max(0,d.auto_off_in||0);
+      lbl.textContent=left<120?'⚠ OFF':'GPU ON';
+      lbl.style.color=left<120?'var(--orange)':'var(--green)';
+    } else {
+      toggle.className='nr-gpu-toggle';
+      toggle.title='Start GPU ($0.40/hr · idle auto-off always applies)';
+      cost.className='nr-gpu-cost';
+      cost.textContent=d.auto_stopped?'AUTO-OFF':'$0.00';
+      bar.style.width='0%';
+      lbl.textContent='GPU';
+      lbl.style.color='';
+    }
+  }catch(e){}
+}
+async function nrGpuToggle(){
+  if(_ideGpu.running){
+    await fetch('/api/gpu/stop?shutdown=true',{method:'POST'});
+  } else {
+    // idle auto-off always enforced — user cannot disable it
+    await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rate:0.40,auto_off:true,idle_timeout:600})});
+  }
+  nrRefreshGpu();
+}
+
 window.addEventListener('DOMContentLoaded',()=>{
   initEditor();
+  renderHlTemplates();
+  renderHlProjects();
   loadLocalModelStatus();
   fetchLiveModels();
   // default model: local vault model — no API key needed
@@ -4576,8 +5249,16 @@ window.addEventListener('DOMContentLoaded',()=>{
   fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{ if(d.configured){ document.getElementById('tbGCPBtn').className='tb-btn gcp-on'; document.getElementById('tbGCPBtn').textContent='☁ '+d.project_id; }});
   // GH repos
   loadGHRepos().catch(()=>{});
+  // context bar — GitHub repo list + HF + GCP status
+  loadCtxGh(); loadCtxHfStatus(); loadCtxGcpStatus();
+  // restore chat history from Nobility Vault
+  fetch('/api/vault/chat-history').then(r=>r.json()).then(d=>{
+    if(d.messages&&d.messages.length){ _messages=d.messages; }
+  }).catch(()=>{});
   // boot terminal
   setTimeout(()=>runCmd('echo "CRANE IDE $(date)" && python3 --version'),500);
+  // GPU mini-meter — poll every 8s
+  nrRefreshGpu(); setInterval(nrRefreshGpu,8000);
 });
 </script>
 </body>
@@ -6180,6 +6861,9 @@ function setMode(m){
   document.getElementById('heroSub').textContent=m==='image'
     ? 'FLUX and Qwen-Image, straight out of your Nobility Vault.'
     : 'Length is auto-set to each model’s native maximum. Chain segments to go past it.';
+  // CAT-5 GPU protocol: images always use free ZeroGPU; videos require paid GCP GPU
+  if(m==='image'){ setProvider('zerogpu'); document.getElementById('pGcp').style.opacity='.35'; document.getElementById('pGcp').title='Images always use free ZeroGPU — GPU ($0.40/hr) reserved for video rendering'; }
+  else { setProvider('gcp'); document.getElementById('pGcp').style.opacity='1'; document.getElementById('pGcp').title=''; }
   document.getElementById('promptBox').placeholder=m==='image'?'Type to imagine…':'Describe the shot…';
   const r=currentRoster(); const def=r.find(x=>x.default)||r[0];
   if(def) pickModel(def.id);
@@ -6253,20 +6937,25 @@ async function generate(){
   try{
     let r,d;
     if(_provider==='zerogpu'){
+      // Images always use free ZeroGPU (HF/Google) — never the $0.40/hr GPU
       setStatus('info','Running on ZeroGPU (free with HF PRO)…');
       r=await fetch('/api/images/zerogpu/generate',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({prompt,mode:_mode,aspect:_aspect,steps:_quality==='speed'?20:34})});
       d=await r.json();
     } else {
+      // Video only — auto-start paid GPU for processing duration; idle auto-off always enforced
       if(!_meter.running){
+        setStatus('info','Starting GPU for video render ($0.40/hr) — auto-off after idle…');
         await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({rate:0.40})});
+          body:JSON.stringify({rate:0.40,auto_off:true,idle_timeout:600})});
         refreshMeter();
       }
       await pingGpu();
       r=await fetch('/api/images/generate',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)});
       d=await r.json();
+      // ping activity so idle timer resets during processing
+      await pingGpu();
     }
     if(d.error==='no_gpu'){
       GPU_CMD=d.gcloud_cmd||'';
@@ -6394,9 +7083,10 @@ async function toggleGpu(){
     setStatus('info',`GPU stopped. This session cost $${(d.session_cost||0).toFixed(4)}.`
       +(d.shutdown&&!d.shutdown.ok?' (Meter stopped; instance shutdown: '+(d.shutdown.detail||'not issued')+')':''));
   } else {
+    // idle auto-off always applies — even on manual start
     await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({rate:0.40})});
-    setStatus('info','GPU meter started — billing at $0.40/hr. Auto-off after 10 min idle.');
+      body:JSON.stringify({rate:0.40,auto_off:true,idle_timeout:600})});
+    setStatus('info','GPU meter started — billing at $0.40/hr. Auto-off after 10 min idle (no activity).');
   }
   refreshMeter();
 }

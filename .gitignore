@@ -5,3 +5,5 @@
 !app.py
 !voice_engine.py
 !.gitignore
+!docs/
+!docs/**
