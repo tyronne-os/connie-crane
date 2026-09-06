@@ -4,6 +4,9 @@
 # Un-ignore project files
 !app.py
 !voice_engine.py
+!README.md
 !.gitignore
 !docs/
 !docs/**
+!design/
+!design/**

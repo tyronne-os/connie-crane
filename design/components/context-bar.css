@@ -1,0 +1,123 @@
+/*
+ * CRANE — Context Bar Component
+ * Permanent bar above the composer: GitHub repo picker, HF chip,
+ * GCP chip, Vault lock button.
+ *
+ * TOKENS USED: --border, --panel, --muted, --text, --gold, --green,
+ *              --radius-md, --font-mono, --ease-micro
+ */
+
+/* ── GitHub repo picker ──────────────────────────────────────── */
+.ctx-gh-wrap { position: relative; flex: 1; }
+
+.ctx-gh-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 5px 10px;
+  cursor: pointer;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  transition: var(--ease-micro);
+  text-align: left;
+}
+.ctx-gh-btn:hover { border-color: rgba(200,168,42,.4); }
+.ctx-gh-icon  { font-size: 11px; opacity: .7; }
+.ctx-gh-repo  { font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-gh-arrow { color: var(--muted); font-size: 8px; flex-shrink: 0; }
+
+/* ── Dropdown menu ───────────────────────────────────────────── */
+.ctx-gh-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  z-index: 500;
+  display: none;
+  box-shadow: var(--shadow-3);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ctx-gh-menu.open { display: block; }
+.ctx-gh-head {
+  padding: 6px 10px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--border);
+}
+.ctx-gh-row {
+  padding: 7px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: .1s;
+}
+.ctx-gh-row:hover { background: rgba(200,168,42,.07); color: var(--gold); }
+.ctx-gh-row .rp   { font-size: 8px; padding: 1px 5px; border-radius: 4px; }
+.ctx-gh-row .rp.priv { background: rgba(239,68,68,.15); color: #fca5a5; }
+.ctx-gh-row .rp.pub  { background: rgba(63,224,168,.1); color: var(--green); }
+.ctx-gh-new {
+  border-top: 1px solid var(--border);
+  padding: 7px 10px;
+  font-size: 10px;
+  color: var(--gold);
+  cursor: pointer;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctx-gh-new:hover { background: rgba(200,168,42,.07); }
+
+/* ── HF + GCP status chips ───────────────────────────────────── */
+.ctx-hf-chip,
+.ctx-gcp-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: .5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: var(--ease-micro);
+}
+.ctx-hf-chip.live  { border-color: rgba(255,160,50,.4); color: #ffb347; }
+.ctx-gcp-chip.live { border-color: rgba(66,133,244,.4); color: #7aacff; }
+.ctx-gcp-chip:hover { border-color: rgba(66,133,244,.6); }
+
+/* ── Vault lock button ───────────────────────────────────────── */
+.ctx-lock {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--ease-micro);
+  flex-shrink: 0;
+}
+.ctx-lock:hover { border-color: var(--gold); color: var(--gold); }

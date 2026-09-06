@@ -1,0 +1,40 @@
+/*
+ * CRANE — Preview Pane Component
+ * In-app project preview with dev server controls.
+ * The iframe loads local dev servers (ports 8001–8099).
+ *
+ * TOKENS USED: --border, --muted, --gold, --panel, --radius-sm
+ */
+
+#previewPane          { flex: 1; overflow: hidden; position: relative; display: none; background: #fff; flex-direction: column; }
+#previewPane.active   { display: flex; }
+
+/* ── Dev server toolbar ──────────────────────────────────────── */
+#previewBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#previewBar .pb-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  cursor: pointer;
+  transition: var(--ease-micro);
+}
+#previewBar .pb-btn:hover  { border-color: var(--gold); color: var(--gold); }
+#previewBar .pb-btn.active { border-color: var(--gold); color: var(--gold); }
+
+/* ── iframe ──────────────────────────────────────────────────── */
+#previewFrame {
+  flex: 1;
+  width: 100%;
+  border: none;
+}

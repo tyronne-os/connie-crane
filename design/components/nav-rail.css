@@ -1,0 +1,101 @@
+/*
+ * CRANE — Navigation Rail Component
+ * Left 48px vertical strip: page buttons, GPU meter, mentor avatar.
+ *
+ * TOKENS USED: --panel, --border, --muted, --text, --gold, --green,
+ *              --bg, --radius-md, --ease-micro
+ */
+
+#navRail {
+  width: 48px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 2px;
+  flex-shrink: 0;
+  z-index: 50;
+}
+
+/* ── Nav buttons ─────────────────────────────────────────────── */
+.nr-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  transition: var(--ease-micro);
+  position: relative;
+}
+.nr-btn:hover { background: rgba(255,255,255,.07); color: var(--text); }
+.nr-btn.active { background: rgba(200,168,42,.12); color: var(--gold); }
+
+/* ── Tooltip ─────────────────────────────────────────────────── */
+.nr-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  background: #1c2333;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s;
+  font-family: var(--font-mono);
+}
+.nr-btn:hover .nr-tooltip { opacity: 1; }
+
+/* ── Layout utilities ────────────────────────────────────────── */
+.nr-spacer  { flex: 1; }
+.nr-divider { width: 28px; height: 1px; background: var(--border); margin: 4px 0; }
+
+/* ── GPU Mini-Meter ──────────────────────────────────────────── */
+.nr-gpu {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0 10px;
+  width: 100%;
+  border-top: 1px solid var(--border);
+}
+.nr-gpu-toggle {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--ease-micro);
+  line-height: 1;
+}
+.nr-gpu-toggle:hover      { border-color: var(--gold); color: var(--gold); }
+.nr-gpu-toggle.live       { border-color: rgba(63,224,168,.5); color: var(--green); background: rgba(63,224,168,.08); }
+.nr-gpu-bar-wrap          { width: 28px; height: 3px; background: rgba(255,255,255,.07); border-radius: 2px; overflow: hidden; }
+.nr-gpu-bar               { height: 100%; width: 0%; background: linear-gradient(90deg, var(--green), var(--gold)); transition: width 1s linear; }
+.nr-gpu-cost              { font-family: var(--font-mono); font-size: 8px; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: -.3px; }
+.nr-gpu-cost.live         { color: var(--green); }
+.nr-gpu-label             { font-size: 7px; letter-spacing: 1px; color: var(--border); font-weight: 700; }
+
+/* ── Mentor avatar at rail bottom ────────────────────────────── */
+.nr-mentor       { overflow: hidden; padding: 0; }
+.nr-mentor-img   { width: 34px; height: 34px; object-fit: cover; border-radius: var(--radius-md); display: block; }
+.nr-mentor:hover { box-shadow: 0 0 0 1px rgba(200,168,42,.4); }

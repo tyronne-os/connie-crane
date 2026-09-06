@@ -1,0 +1,104 @@
+/*
+ * CRANE — Composer Component
+ * The primary chat input (parchment interior, dark IDE surround).
+ *
+ * TOKENS USED: --composer-bg, --composer-text, --composer-placeholder,
+ *              --composer-border, --composer-border-focus, --composer-glow,
+ *              --composer-row-border, --gold, --muted, --border
+ *              --radius-lg, --radius-md, --sp-4, --sp-3, --sp-2
+ */
+
+/* ── Landing page wrapper — centers composer lower on viewport ── */
+#homeLanding {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14vh 24px 40px;
+  background: var(--bg);
+}
+#homeLanding.hidden { display: none; }
+
+/* ── Context bar (repo picker + HF + GCP + vault lock) ─────── */
+#ctxBar {
+  width: 100%;
+  max-width: 800px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+/* ── Composer box — ONLY surface with parchment bg ──────────── */
+#hlComposer {
+  width: 100%;
+  max-width: 800px;
+  background: var(--composer-bg);
+  border: 1px solid var(--composer-border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4) var(--sp-4) 10px;
+  transition: var(--ease-micro);
+  margin-bottom: 34px;
+}
+#hlComposer:focus-within {
+  border-color: var(--composer-border-focus);
+  box-shadow: 0 0 0 3px var(--composer-glow);
+}
+
+/* ── Chat textarea ───────────────────────────────────────────── */
+#chatInput {
+  background: transparent;
+  border: none;
+  color: var(--composer-text);
+  font-size: var(--text-body);
+  font-family: var(--font-ui);
+  outline: none;
+  resize: none;
+  width: 100%;
+  min-height: 64px;
+  max-height: 200px;
+  padding: 10px 12px;
+  line-height: 1.6;
+}
+#chatInput::placeholder { color: var(--composer-placeholder); }
+
+/* ── Options row (below textarea — outline only, no fill) ────── */
+.hl-composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 10px;
+  border: 1px solid var(--composer-row-border);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  background: transparent;
+}
+
+/* ── Template section (collapsed by default) ─────────────────── */
+.hl-templates-label {
+  width: 100%;
+  max-width: 800px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.hl-templates-label:hover { color: var(--text); }
+.hl-templates {
+  width: 100%;
+  max-width: 800px;
+  display: none;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin-bottom: 40px;
+}
+.hl-templates.open { display: grid; }
