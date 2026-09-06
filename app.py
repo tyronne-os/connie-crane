@@ -3373,9 +3373,9 @@ async def serve_ide():
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
 <style>
 /* ── CodeMirror ── */
-.CodeMirror{height:100%;font-family:'JetBrains Mono',monospace;font-size:13px;background:#070d18;color:#e2e8f0;line-height:1.6;}
-.CodeMirror-gutters{background:#0d1627;border-right:1px solid #1e3052;}
-.CodeMirror-linenumber{color:#334155;padding:0 8px;}
+.CodeMirror{height:100%;font-family:'JetBrains Mono',monospace;font-size:13px;background:#07090d;color:#d7e2f0;line-height:1.6;}
+.CodeMirror-gutters{background:#0e1117;border-right:1px solid #21262d;}
+.CodeMirror-linenumber{color:#2d3a4a;padding:0 8px;}
 .CodeMirror-cursor{border-left:2px solid #38bdf8;}
 .cm-keyword{color:#c084fc;}.cm-string{color:#86efac;}.cm-comment{color:#475569;font-style:italic;}
 .cm-number{color:#fb923c;}.cm-def{color:#38bdf8;}.cm-variable{color:#e2e8f0;}
@@ -3384,35 +3384,50 @@ async def serve_ide():
 
 /* ── TOKENS ── */
 :root{
-  --bg:#070d18;--panel:#0d1627;--card:#111827;--border:#1e3052;
-  --blue:#38bdf8;--purple:#a855f7;--green:#10b981;--orange:#f59e0b;
-  --red:#ef4444;--text:#e2e8f0;--muted:#475569;--nvidia:#76b900;
-  --gold:#f59e0b;
+  --bg:#07090d;--panel:#0e1117;--card:#161b22;--border:#21262d;
+  --blue:#38bdf8;--purple:#a855f7;--green:#3fe0a8;--orange:#f59e0b;
+  --red:#ef4444;--text:#d7e2f0;--muted:#4b5a70;--nvidia:#76b900;
+  --gold:#f59e0b;--accent:#3fe0a8;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
 
+/* ── LEFT NAV RAIL ── */
+#navRail{width:48px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:2px;flex-shrink:0;z-index:50;}
+.nr-btn{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;color:var(--muted);background:transparent;border:none;transition:.15s;position:relative;}
+.nr-btn:hover{background:rgba(255,255,255,.07);color:var(--text);}
+.nr-btn.active{background:rgba(63,224,168,.12);color:var(--accent);}
+.nr-btn[data-page="studio"].active{background:rgba(63,224,168,.12);color:var(--accent);}
+.nr-btn[data-page="depo"].active{background:rgba(245,158,11,.12);color:var(--gold);}
+.nr-btn[data-page="images"].active{background:rgba(168,85,247,.12);color:var(--purple);}
+.nr-btn[data-page="bigq"].active{background:rgba(56,189,248,.12);color:var(--blue);}
+.nr-tooltip{position:absolute;left:calc(100% + 8px);background:#1c2333;border:1px solid var(--border);color:var(--text);font-size:10px;font-weight:700;letter-spacing:1px;padding:3px 9px;border-radius:5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .12s;font-family:'JetBrains Mono',monospace;}
+.nr-btn:hover .nr-tooltip{opacity:1;}
+.nr-spacer{flex:1;}
+.nr-divider{width:28px;height:1px;background:var(--border);margin:4px 0;}
+
 /* ── TOPBAR ── */
 #topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:0 14px;flex-shrink:0;}
-.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;background:linear-gradient(90deg,#38bdf8,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;}
-.tb-sep{width:1px;height:22px;background:var(--border);margin:0 2px;}
-.tb-status{font-size:11px;display:flex;align-items:center;gap:4px;}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);}
-.dot.on{background:var(--green);box-shadow:0 0 6px var(--green);}
+.logo-ide{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;background:linear-gradient(90deg,var(--accent),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:3px;}
+.tb-sep{width:1px;height:20px;background:var(--border);margin:0 2px;}
+.tb-status{font-size:10px;display:flex;align-items:center;gap:4px;color:var(--muted);}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
+.dot.on{background:var(--accent);box-shadow:0 0 5px var(--accent);}
 .dot.warn{background:var(--orange);}
-.tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;transition:.15s;}
-.tb-btn:hover{border-color:var(--blue);color:var(--blue);}
+.tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 10px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:600;letter-spacing:.5px;transition:.15s;}
+.tb-btn:hover{border-color:var(--accent);color:var(--accent);}
 .tb-btn.active{border-color:var(--purple);color:var(--purple);}
-.tb-btn.connected{border-color:var(--green);color:var(--green);}
+.tb-btn.connected{border-color:var(--accent);color:var(--accent);}
 .tb-btn.gcp-on{border-color:var(--nvidia);color:var(--nvidia);}
-#voiceBtn{background:linear-gradient(135deg,#7c3aed,#f59e0b);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;letter-spacing:1px;}
+#voiceBtn{background:rgba(63,224,168,.15);color:var(--accent);border:1px solid rgba(63,224,168,.3);padding:4px 12px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:1px;transition:.15s;}
+#voiceBtn:hover{background:rgba(63,224,168,.25);}
 .tb-spacer{flex:1;}
 
 /* ── LAYOUT ── */
 #main{display:flex;flex:1;overflow:hidden;}
 
 /* ── FILE SIDEBAR ── */
-#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
+#sidebar{width:210px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
 #sideHead{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0;}
 #sideHead select{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px;outline:none;}
 #fileTree{flex:1;overflow-y:auto;padding:4px 0;}
@@ -3572,13 +3587,24 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #modeHint{font-size:10px;color:var(--muted);padding:2px 10px 0;min-height:14px;}
 
 ::-webkit-scrollbar{width:4px;height:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-  #topbar { position: relative; }
-  .crane-nav { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; background: rgba(0,0,0,.35); border-radius: 8px; padding: 4px; z-index: 10; }
-  .nav-tab { color: var(--muted); text-decoration: none; padding: 5px 20px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 2px; transition: .15s; font-family: 'JetBrains Mono',monospace; }
-  .nav-tab:hover { color: var(--text); background: rgba(255,255,255,.07); }
-  .nav-tab.active { color: #fff; background: rgba(168,85,247,.28); border: 1px solid rgba(168,85,247,.4); }
-  .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: var(--gold); }
-  .nav-tab.studio.active { background: rgba(16,185,129,.22); border-color: rgba(16,185,129,.4); color: #10b981; }
+
+/* ── WELCOME HOME ── */
+#welcomeHero{padding:24px 16px 16px;flex-shrink:0;}
+#welcomeHero .wh-greeting{font-size:11px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;font-weight:600;margin-bottom:4px;}
+#welcomeHero .wh-title{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:18px;background:linear-gradient(90deg,var(--accent),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1px;margin-bottom:12px;}
+.home-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.home-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:11px 12px;cursor:pointer;transition:.15s;display:flex;flex-direction:column;gap:4px;}
+.home-card:hover{border-color:rgba(63,224,168,.3);background:#1a2333;}
+.home-card .hc-icon{font-size:16px;margin-bottom:2px;}
+.home-card .hc-label{font-size:10px;font-weight:700;letter-spacing:1px;color:var(--text);}
+.home-card .hc-sub{font-size:9px;color:var(--muted);line-height:1.4;}
+.home-recents{border-top:1px solid var(--border);padding-top:10px;}
+.home-recents-label{font-size:9px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;font-weight:600;margin-bottom:6px;font-family:'JetBrains Mono',monospace;}
+.home-recent-item{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:5px;cursor:pointer;transition:.12s;}
+.home-recent-item:hover{background:rgba(255,255,255,.04);}
+.home-recent-item .ri-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0;}
+.home-recent-item .ri-name{font-size:11px;font-family:'JetBrains Mono',monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.home-recent-item .ri-time{font-size:9px;color:var(--muted);}
 
 
 .repo-row{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-family:'JetBrains Mono',monospace;}
@@ -3591,25 +3617,42 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
 <!-- TOP BAR -->
 <div id="topbar">
-  <span class="logo-ide">CRANE&nbsp;IDE</span>
+  <span class="logo-ide">CRANE</span>
   <div class="tb-sep"></div>
-  <div class="tb-status"><div class="dot" id="nvDot"></div><span id="nvLabel" style="font-size:11px">NIM</span></div>
+  <div class="tb-status"><div class="dot" id="nvDot"></div><span id="nvLabel">NIM</span></div>
   <div class="tb-sep"></div>
   <button class="tb-btn" id="tbGHBtn" onclick="openGHModal()">⎇ GitHub</button>
   <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
-  <nav class="crane-nav">
-    <a href="/ide" class="nav-tab active">HOME</a>
-    <a href="/studio" class="nav-tab studio">STUDIO</a>
-    <a href="/connie" class="nav-tab">CONNIE</a>
-    <a href="/depo" class="nav-tab depo">DEPO</a>
-      <a href="/images" class="nav-tab img">IMAGES</a>
-  </nav>
   <div class="tb-spacer"></div>
   <button id="voiceBtn" onclick="window.location='/bigq'">🎙 BIG Q</button>
 </div>
 
 <!-- MAIN -->
 <div id="main">
+
+  <!-- LEFT NAV RAIL -->
+  <div id="navRail">
+    <a href="/ide" class="nr-btn active" data-page="home" title="HOME">
+      <span>⬡</span><span class="nr-tooltip">HOME</span>
+    </a>
+    <a href="/studio" class="nr-btn" data-page="studio" title="STUDIO">
+      <span>🎙</span><span class="nr-tooltip">STUDIO</span>
+    </a>
+    <a href="/connie" class="nr-btn" data-page="connie" title="CONNIE">
+      <span>🧠</span><span class="nr-tooltip">CONNIE</span>
+    </a>
+    <a href="/depo" class="nr-btn" data-page="depo" title="DEPO">
+      <span>🔐</span><span class="nr-tooltip">DEPO</span>
+    </a>
+    <a href="/images" class="nr-btn" data-page="images" title="IMAGES">
+      <span>🎬</span><span class="nr-tooltip">IMAGES</span>
+    </a>
+    <div class="nr-divider"></div>
+    <a href="/bigq" class="nr-btn" data-page="bigq" title="BIG Q">
+      <span>🎛</span><span class="nr-tooltip">BIG Q</span>
+    </a>
+    <div class="nr-spacer"></div>
+  </div>
 
   <!-- SIDEBAR -->
   <div id="sidebar">
@@ -3650,10 +3693,36 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     </div>
     <div id="chatLog">
       <div id="welcomeHero">
-        <div class="wh-title">KICK ASS TODAY TJ</div>
-        <div class="wh-sub">GET SHIT DONE</div>
+        <div class="wh-greeting">Good to see you, TJ</div>
+        <div class="wh-title">CONNIE CODE</div>
+        <div class="home-cards">
+          <div class="home-card" onclick="openGHModal()">
+            <div class="hc-icon">⎇</div>
+            <div class="hc-label">OPEN PROJECT</div>
+            <div class="hc-sub">Connect a GitHub repo to start coding</div>
+          </div>
+          <div class="home-card" onclick="window.location='/studio'">
+            <div class="hc-icon">🎙</div>
+            <div class="hc-label">VOICE STUDIO</div>
+            <div class="hc-sub">Clone voices, mix, BIG Q mastering</div>
+          </div>
+          <div class="home-card" onclick="window.location='/depo'">
+            <div class="hc-icon">🔐</div>
+            <div class="hc-label">VAULT</div>
+            <div class="hc-sub">Nobility Vault · models · keys</div>
+          </div>
+          <div class="home-card" onclick="window.location='/images'">
+            <div class="hc-icon">🎬</div>
+            <div class="hc-label">IMAGES</div>
+            <div class="hc-sub">MiniMax-H3 · ZeroGPU · video gen</div>
+          </div>
+        </div>
+        <div class="home-recents" id="homeRecents" style="display:none">
+          <div class="home-recents-label">RECENT REPOS</div>
+          <div id="recentRepoList"></div>
+        </div>
       </div>
-      <div class="msg sys">CRANE IDE is live. Select your model, open your repo, and let's build.</div>
+      <div class="msg sys">CRANE IDE is live — select model, open a repo, let's build.</div>
     </div>
 
     <!-- ════ CLAUDE-STYLE COMPOSER ════ -->
