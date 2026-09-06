@@ -4773,6 +4773,28 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 #uploadZone:hover,#uploadZone.over{border-color:var(--gold);color:var(--gold);}
 #uploadInput{display:none;}
 ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* GPU ADMIN CONTROL PANEL */
+#gpuAdmin{position:fixed;left:12px;bottom:12px;z-index:800;width:230px;background:rgba(13,22,39,.97);border:1px solid var(--border);border-radius:12px;padding:12px 13px;backdrop-filter:blur(8px);font-family:'JetBrains Mono',monospace;box-shadow:0 6px 26px rgba(0,0,0,.5);}
+#gpuAdmin.live{border-color:rgba(16,185,129,.5);}
+#gpuAdmin.warn{border-color:rgba(245,158,11,.6);}
+.ga-top{display:flex;align-items:center;gap:6px;margin-bottom:9px;}
+.ga-title{font-size:9px;letter-spacing:1.5px;color:var(--gold);font-weight:700;flex:1;}
+.ga-toggle{background:var(--green);border:none;color:#04140c;border-radius:6px;font-size:10px;font-weight:700;padding:5px 12px;cursor:pointer;font-family:'JetBrains Mono',monospace;letter-spacing:.5px;}
+.ga-toggle.stop{background:var(--red);color:#fff;}
+.ga-toggle:hover{filter:brightness(1.1);}
+.ga-row{display:flex;justify-content:space-between;align-items:baseline;font-size:10px;margin-bottom:5px;}
+.ga-k{color:var(--muted);}
+.ga-v{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums;}
+.ga-big{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
+.ga-live{color:var(--green);}
+.ga-idle{color:var(--muted);}
+.ga-bar{height:3px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden;margin-top:8px;}
+.ga-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--gold));width:0%;transition:width 1s linear;}
+.ga-note{font-size:8px;color:var(--muted);margin-top:7px;line-height:1.45;}
+.ga-sleep{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.07);}
+.ga-sleep label{font-size:9px;color:var(--muted);flex:1;}
+.ga-sleep select{background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:5px;font-size:9px;padding:3px 5px;font-family:'JetBrains Mono',monospace;}
 </style>
 </head>
 <body>
@@ -4980,8 +5002,109 @@ async function handleUpload(files) {
   await loadVault(); filterVault();
 }
 
-window.addEventListener('DOMContentLoaded', () => { loadVault(); });
+// ── GPU ADMIN CONTROL ────────────────────────────────────────────────────
+let _gaMeter={running:false}, _gaTimer=null;
+
+function gaFmtDur(s){
+  s=Math.floor(s); const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), x=s%60;
+  return h>0 ? `${h}h ${m}m ${x}s` : m>0 ? `${m}m ${x}s` : `${x}s`;
+}
+
+async function refreshGpuAdmin(){
+  try{
+    const r=await fetch('/api/gpu/meter'); const d=await r.json();
+    _gaMeter=d;
+    const box=document.getElementById('gpuAdmin');
+    document.getElementById('gaDot').className='dot '+(d.running?'on':'');
+    document.getElementById('gaCost').textContent='$'+(d.session_cost||0).toFixed(4);
+    document.getElementById('gaCost').className='ga-big '+(d.running?'ga-live':'ga-idle');
+    document.getElementById('gaTime').textContent=d.running?gaFmtDur(d.elapsed_seconds):'—';
+    document.getElementById('gaRate').textContent='$'+(d.rate||0.4).toFixed(2)+'/hr';
+    document.getElementById('gaTotal').textContent='$'+(d.total_cost||0).toFixed(4);
+    const btn=document.getElementById('gaBtn');
+    btn.textContent=d.running?'⏻ STOP GPU':'⚡ START GPU';
+    btn.className='ga-toggle'+(d.running?' stop':'');
+
+    if(d.running){
+      const frac=Math.min(1,(d.idle_seconds||0)/(d.idle_timeout||600));
+      document.getElementById('gaFill').style.width=(frac*100)+'%';
+      const left=Math.max(0,d.auto_off_in||0);
+      box.className = left<120 ? 'warn' : 'live';
+      document.getElementById('gaNote').textContent =
+        left<120 ? `⚠ auto-off in ${gaFmtDur(left)} — no activity`
+                 : `Sleeping in ${gaFmtDur(left)} if idle.`;
+    } else {
+      box.className='';
+      document.getElementById('gaFill').style.width='0%';
+      document.getElementById('gaNote').textContent =
+        d.auto_stopped ? 'Auto-stopped on idle. Instance stop issued.'
+                       : 'berylize-node · toggle on for GCP GPU tasks.';
+    }
+  }catch(e){}
+}
+
+async function toggleGpuAdmin(){
+  if(_gaMeter.running){
+    const r=await fetch('/api/gpu/stop?shutdown=true',{method:'POST'});
+    const d=await r.json();
+    alert(`GPU stopped. This session cost $${(d.session_cost||0).toFixed(4)}.`);
+  } else {
+    await fetch('/api/gpu/start',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rate:0.40})});
+    alert('GPU starting — billing at $0.40/hr. Sleep timer will auto-off after the selected idle period.');
+  }
+  refreshGpuAdmin();
+}
+
+async function setSleepTimer(sel){
+  const seconds = parseInt(sel.value, 10);
+  await fetch('/api/gpu/meter/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({idle_timeout: seconds})});
+  refreshGpuAdmin();
+}
+
+// any real interaction on this page counts as activity for the idle timer
+async function pingGpuAdmin(){ if(_gaMeter.running){ try{ await fetch('/api/gpu/ping',{method:'POST'}); }catch(e){} } }
+['click','keydown'].forEach(ev=>document.addEventListener(ev,()=>{
+  if(!window._gaPingThrottle||Date.now()-window._gaPingThrottle>20000){ window._gaPingThrottle=Date.now(); pingGpuAdmin(); }
+}));
+
+window.addEventListener('DOMContentLoaded', () => {
+  loadVault();
+  refreshGpuAdmin();
+  _gaTimer=setInterval(refreshGpuAdmin,5000);
+});
 </script>
+
+<div id="gpuAdmin">
+  <div class="ga-top">
+    <span class="dot" id="gaDot"></span>
+    <span class="ga-title">GPU ADMIN — berylize-node</span>
+  </div>
+  <div class="ga-row">
+    <span class="ga-k">this session</span>
+    <span class="ga-big ga-idle" id="gaCost">$0.0000</span>
+  </div>
+  <div class="ga-row"><span class="ga-k">runtime</span><span class="ga-v" id="gaTime">—</span></div>
+  <div class="ga-row"><span class="ga-k">rate</span><span class="ga-v" id="gaRate">$0.40/hr</span></div>
+  <div class="ga-row" style="border-top:1px solid rgba(255,255,255,.07);padding-top:5px;margin-top:6px;">
+    <span class="ga-k">lifetime</span><span class="ga-v" id="gaTotal">$0.0000</span>
+  </div>
+  <div class="ga-bar"><div class="ga-fill" id="gaFill"></div></div>
+  <div class="ga-note" id="gaNote">berylize-node · toggle on for GCP GPU tasks.</div>
+  <div class="ga-sleep">
+    <label>sleep after</label>
+    <select onchange="setSleepTimer(this)">
+      <option value="300">5 min</option>
+      <option value="600" selected>10 min</option>
+      <option value="1200">20 min</option>
+      <option value="1800">30 min</option>
+    </select>
+  </div>
+  <div style="margin-top:10px;text-align:center">
+    <button class="ga-toggle" id="gaBtn" onclick="toggleGpuAdmin()" style="width:100%">⚡ START GPU</button>
+  </div>
+</div>
 </body>
 </html>
 """
@@ -5167,7 +5290,7 @@ def _meter_load():
             pass
     return {"running": False, "started_at": None, "last_activity": None,
             "rate": GPU_DEFAULT_RATE, "total_cost": 0.0, "total_seconds": 0.0,
-            "sessions": [], "auto_off": True}
+            "sessions": [], "auto_off": True, "idle_timeout": GPU_IDLE_TIMEOUT_S}
 
 
 def _meter_save(m):
@@ -5182,6 +5305,7 @@ def _meter_state(m=None):
     elapsed = 0.0
     session_cost = 0.0
     idle = 0.0
+    idle_timeout = m.get("idle_timeout", GPU_IDLE_TIMEOUT_S)
     if m.get("running") and m.get("started_at"):
         elapsed = now - m["started_at"]
         session_cost = (elapsed / 3600.0) * m.get("rate", GPU_DEFAULT_RATE)
@@ -5195,8 +5319,8 @@ def _meter_state(m=None):
         "lifetime_cost": round(m.get("total_cost", 0.0), 4),
         "total_seconds": round(m.get("total_seconds", 0.0) + elapsed, 1),
         "idle_seconds": round(idle, 1),
-        "idle_timeout": GPU_IDLE_TIMEOUT_S,
-        "auto_off_in": round(max(0, GPU_IDLE_TIMEOUT_S - idle), 1) if m.get("running") else None,
+        "idle_timeout": idle_timeout,
+        "auto_off_in": round(max(0, idle_timeout - idle), 1) if m.get("running") else None,
         "auto_off": m.get("auto_off", True),
         "session_count": len(m.get("sessions", [])),
     }
@@ -5257,10 +5381,10 @@ async def gpu_meter_get():
     st = _meter_state(m)
     # enforce the idle timeout on read, so the meter self-heals even if the
     # background watcher is not running
-    if st["running"] and m.get("auto_off", True) and st["idle_seconds"] >= GPU_IDLE_TIMEOUT_S:
+    if st["running"] and m.get("auto_off", True) and st["idle_seconds"] >= st["idle_timeout"]:
         stopped = await gpu_meter_stop(shutdown=True)
         stopped["auto_stopped"] = True
-        stopped["reason"] = f"idle {int(st['idle_seconds'])}s >= {GPU_IDLE_TIMEOUT_S}s"
+        stopped["reason"] = f"idle {int(st['idle_seconds'])}s >= {st['idle_timeout']}s"
         return stopped
     return st
 
@@ -5268,6 +5392,7 @@ async def gpu_meter_get():
 class MeterConfigRequest(BaseModel):
     rate: float = None
     auto_off: bool = None
+    idle_timeout: int = None
     reset_total: bool = False
 
 
@@ -5278,6 +5403,8 @@ async def gpu_meter_config(req: MeterConfigRequest):
         m["rate"] = req.rate
     if req.auto_off is not None:
         m["auto_off"] = req.auto_off
+    if req.idle_timeout is not None:
+        m["idle_timeout"] = req.idle_timeout
     if req.reset_total:
         m["total_cost"] = 0.0
         m["total_seconds"] = 0.0
