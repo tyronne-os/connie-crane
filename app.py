@@ -920,6 +920,11 @@ async def harvest_media(req: ExtractRequest):
 async def serve_root():
     return RedirectResponse(url="/ide")
 
+
+@app.get("/bigq", response_class=RedirectResponse)
+async def serve_bigq():
+    return RedirectResponse(url="/studio")
+
 @app.get("/studio", response_class=HTMLResponse)
 async def serve_ui():
     return """<!DOCTYPE html>
@@ -944,6 +949,7 @@ async def serve_ui():
         .nav-tab.active { color: #fff; background: rgba(168,85,247,.28); border: 1px solid rgba(168,85,247,.4); }
         .nav-tab.depo { }
         .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: #f59e0b; }
+        .nav-tab.studio.active { background: rgba(16,185,129,.22); border-color: rgba(16,185,129,.4); color: #10b981; }
 
         .logo { font-weight: bold; letter-spacing: 1px; font-size: 1rem; color: #fff; }
         .badge { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; border: 1px solid var(--accent-blue); }
@@ -1064,6 +1070,7 @@ async def serve_ui():
         <div class="logo">🏗️ CRANE STUDIO</div>
         <nav class="crane-nav">
           <a href="/ide" class="nav-tab">HOME</a>
+          <a href="/studio" class="nav-tab studio active">STUDIO</a>
           <a href="/connie" class="nav-tab">CONNIE</a>
           <a href="/depo" class="nav-tab depo">DEPO</a>
                   <a href="/images" class="nav-tab img">IMAGES</a>
@@ -3571,6 +3578,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   .nav-tab:hover { color: var(--text); background: rgba(255,255,255,.07); }
   .nav-tab.active { color: #fff; background: rgba(168,85,247,.28); border: 1px solid rgba(168,85,247,.4); }
   .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: var(--gold); }
+  .nav-tab.studio.active { background: rgba(16,185,129,.22); border-color: rgba(16,185,129,.4); color: #10b981; }
 
 
 .repo-row{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-family:'JetBrains Mono',monospace;}
@@ -3591,6 +3599,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <button class="tb-btn" id="tbGCPBtn" onclick="openGCPModal()">☁ GCP</button>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab active">HOME</a>
+    <a href="/studio" class="nav-tab studio">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
       <a href="/images" class="nav-tab img">IMAGES</a>
@@ -4429,6 +4438,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
+.nav-tab.studio.active{background:rgba(16,185,129,.22);border-color:rgba(16,185,129,.4);color:#10b981;}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -4482,6 +4492,7 @@ input[type=range]{flex:1;accent-color:var(--purple);}
   <span class="logo-c">CONNIE</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab studio">STUDIO</a>
     <a href="/connie" class="nav-tab active">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
       <a href="/images" class="nav-tab img">IMAGES</a>
@@ -4715,6 +4726,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab.active{color:#fff;background:rgba(168,85,247,.28);border:1px solid rgba(168,85,247,.4);}
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
+.nav-tab.studio.active{background:rgba(16,185,129,.22);border-color:rgba(16,185,129,.4);color:#10b981;}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -4769,6 +4781,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <span class="logo-d">DEPO</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab studio">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo active">DEPO</a>
       <a href="/images" class="nav-tab img">IMAGES</a>
@@ -5557,6 +5570,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
+.nav-tab.studio.active{background:rgba(16,185,129,.22);border-color:rgba(16,185,129,.4);color:#10b981;}
 .tb-spacer{flex:1;}
 #gpuPill{display:flex;align-items:center;gap:6px;font-size:10px;font-family:'JetBrains Mono',monospace;border:1px solid var(--border);border-radius:14px;padding:3px 10px;cursor:pointer;}
 #gpuPill:hover{border-color:var(--blue);}
@@ -5683,6 +5697,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
   <span class="logo-i">CRANE</span>
   <nav class="crane-nav">
     <a href="/ide" class="nav-tab">HOME</a>
+    <a href="/studio" class="nav-tab studio">STUDIO</a>
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
     <a href="/images" class="nav-tab img active">IMAGES</a>
