@@ -3660,6 +3660,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .tb-gcp-chip.live{border-color:rgba(66,133,244,.4);color:#7aacff;}
 .tb-lock{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;flex-shrink:0;}
 .tb-lock:hover{border-color:var(--gold);color:var(--gold);}
+.tb-preview-btn{height:24px;padding:0 10px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:11px;font-family:'JetBrains Mono',monospace;cursor:pointer;display:flex;align-items:center;gap:5px;transition:.15s;flex-shrink:0;letter-spacing:.3px;}
+.tb-preview-btn:hover,.tb-preview-btn.active{border-color:var(--jade);color:var(--jade);}
 .logo-ide{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:14px;color:var(--gold);letter-spacing:4px;}
 .tb-sep{width:1px;height:20px;background:var(--border);margin:0 2px;}
 .tb-status{font-size:10px;display:flex;align-items:center;gap:4px;color:var(--muted);}
@@ -3699,7 +3701,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
 /* ── EDITOR AREA ── */
 #editorArea{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
-#tabBar{height:34px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;overflow-x:auto;flex-shrink:0;}
+#tabBar{height:34px;background:var(--panel);border-bottom:1px solid var(--border);display:none;align-items:center;overflow-x:auto;flex-shrink:0;}
 .ed-tab{padding:0 14px;height:34px;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;border-right:1px solid var(--border);white-space:nowrap;color:var(--muted);flex-shrink:0;}
 .ed-tab.active{background:var(--bg);color:var(--text);border-top:2px solid var(--gold);}
 .ed-tab .tclose{opacity:.4;font-size:14px;line-height:1;}
@@ -4005,6 +4007,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       </div>
     </div>
     <div class="tb-hf-chip" id="ctxHfChip">🤗 HF —</div>
+    <button class="tb-preview-btn" id="tbPreviewBtn" onclick="togglePreview()" title="Live Preview">◱ Preview</button>
     <button class="tb-lock" onclick="toggleVault()" title="Nobility Vault">🔒</button>
   </div>
 </div>
@@ -4062,10 +4065,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 
   <!-- EDITOR -->
   <div id="editorArea">
-    <div id="tabBar">
-      <div class="ed-tab active" id="welcomeTab" onclick="_activeTab=null;showEditorTab()">🏗 home</div>
-      <div class="ed-tab" id="previewTab" data-tab="preview" onclick="togglePreview()">◱ Live Preview</div>
-    </div>
+    <div id="tabBar"></div>
     <div id="editorWrap">
       <div id="homeLanding">
 
@@ -4853,8 +4853,8 @@ function showEditorTab(){
   _previewActive=false;
   document.getElementById('previewPane').classList.remove('active');
   document.getElementById('editorWrap').style.display='block';
-  document.getElementById('previewTab').classList.remove('active');
-  document.querySelectorAll('.ed-tab').forEach(t=>{ if(t.id!=='previewTab') t.classList.toggle('active', t.id===('tab_'+btoa(_activeTab||''))||t.id==='welcomeTab'&&!_activeTab); });
+  document.getElementById('tbPreviewBtn')?.classList.remove('active');
+  document.querySelectorAll('.ed-tab').forEach(t=>{ t.classList.toggle('active', t.id===('tab_'+btoa(_activeTab||''))); });
   if(_activeTab && _tabs[_activeTab]){
     document.getElementById('homeLanding').classList.add('hidden');
     document.getElementById('cmContainer').style.display='block';
@@ -4869,7 +4869,7 @@ function togglePreview(){
   document.getElementById('previewPane').classList.add('active');
   document.getElementById('editorWrap').style.display='none';
   document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('previewTab').classList.add('active');
+  document.getElementById('tbPreviewBtn')?.classList.add('active');
   refreshPreview();
 }
 function renderPreview(html){
@@ -4881,7 +4881,7 @@ function renderPreview(html){
   document.getElementById('previewPane').classList.add('active');
   document.getElementById('editorWrap').style.display='none';
   document.querySelectorAll('.ed-tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('previewTab').classList.add('active');
+  document.getElementById('tbPreviewBtn')?.classList.add('active');
   _previewActive=true;
 }
 function refreshPreview(){
@@ -5079,7 +5079,7 @@ function addTab(path){
   if(document.getElementById(id)){setActiveTab(path);return;}
   const tab=document.createElement('div'); tab.className='ed-tab'; tab.id=id;
   tab.innerHTML=getFileIcon(path)+' '+fname+`<span class="tclose" onclick="closeTab('${path}',event)">×</span>`;
-  tab.onclick=()=>setActiveTab(path); bar.appendChild(tab); setActiveTab(path);
+  tab.onclick=()=>setActiveTab(path); bar.appendChild(tab); bar.style.display='flex'; setActiveTab(path);
 }
 function setActiveTab(path){
   _activeTab=path;
@@ -5096,6 +5096,8 @@ function closeTab(path,e){
   e.stopPropagation();
   document.getElementById('tab_'+btoa(path))?.remove();
   delete _tabs[path]; _activeTab='welcome';
+  const bar=document.getElementById('tabBar');
+  if(bar && bar.querySelectorAll('.ed-tab').length===0) bar.style.display='none';
 }
 
 // ── SAVE/COMMIT ─────────────────────────────────────────────────────────────
