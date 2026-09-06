@@ -30,3 +30,12 @@ These are not suggestions. The skills contain the exit criteria (mandatory check
 cd /home/hunt
 /home/hunt/.local/bin/uv run --python /home/hunt/.venv/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
+
+## EXECUTION LAW: Load crane-computer-use before any autonomous task
+
+Run /crane-computer-use before any multi-step autonomous execution, any Computer
+Use session, or any task driven by a non-technical operator. Governs the
+supervisor-worker split, 3-attempt branch rule, pre-action verification, skill
+library at ~/.crane_skills/, escalation brief format.
+
+Accountability spec: specs/computer-use-accountability.md

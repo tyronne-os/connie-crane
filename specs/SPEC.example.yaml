@@ -1,0 +1,93 @@
+# CRANE Computer Use — worked example spec.
+# Criteria verify the real state of this repo, so `check` returns real results.
+# Copy this shape for actual runs.
+
+run_id: cu_example_selfcheck
+goal: "CRANE design system and Computer Use engine are wired correctly"
+operator_mode: engineer
+completion_gate: 0.90
+
+criteria:
+  - id: DESIGN-01
+    statement: "The design token system is the single source of truth"
+    weight: 3
+    verify:
+      kind: file
+      path: /home/hunt/design/tokens.css
+      pattern: "--gold:\\s*#f0b429"
+      expect: present
+    reversible: true
+    blast_radius: ["design/tokens.css"]
+
+  - id: DESIGN-02
+    statement: "No stale v1 gold values remain anywhere in the app"
+    weight: 3
+    verify:
+      kind: command
+      run: "! grep -q 'rgba(200,168,42' /home/hunt/app.py"
+      expect_exit: 0
+    reversible: true
+    blast_radius: ["app.py"]
+
+  - id: SKILL-01
+    statement: "All four CRANE skills are installed"
+    weight: 3
+    verify:
+      kind: command
+      run: "test $(ls /home/hunt/.claude/skills/crane-*.md | wc -l) -eq 4"
+      expect_exit: 0
+    reversible: true
+    blast_radius: ["~/.claude/skills/"]
+
+  - id: SKILL-02
+    statement: "crane-computer-use is registered in global instructions"
+    weight: 2
+    verify:
+      kind: file
+      path: /home/hunt/.claude/CLAUDE.md
+      pattern: "crane-computer-use"
+      expect: present
+    reversible: true
+    blast_radius: ["~/.claude/CLAUDE.md"]
+
+  - id: SKILL-03
+    statement: "crane-computer-use is registered in project instructions"
+    weight: 2
+    verify:
+      kind: file
+      path: /home/hunt/CLAUDE.md
+      pattern: "crane-computer-use"
+      expect: present
+    reversible: true
+    blast_radius: ["CLAUDE.md"]
+
+  - id: SERVE-01
+    statement: "The CRANE IDE serves successfully"
+    weight: 3
+    verify:
+      kind: http
+      url: "http://127.0.0.1:8000/ide"
+      expect_status: 200
+      expect_contains: "GET SHIT DONE ALL DAY TJ!"
+    reversible: false
+    blast_radius: ["app.py"]
+
+  - id: SERVE-02
+    statement: "The duplicate tab strip is gone from the home view"
+    weight: 1
+    verify:
+      kind: command
+      run: "! grep -q 'Live Preview</div>' /home/hunt/app.py"
+      expect_exit: 0
+    reversible: true
+    blast_radius: ["app.py"]
+
+  - id: SEC-01
+    statement: "Credential values never reach the browser"
+    weight: 3
+    verify:
+      kind: command
+      run: "! grep -qE 'HF_TOKEN.*return|return.*_vault_get' /home/hunt/app.py"
+      expect_exit: 0
+    reversible: false
+    blast_radius: ["app.py"]
