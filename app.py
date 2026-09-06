@@ -4964,13 +4964,13 @@ function playFile(e, name) {
 function sendToBigQ() {
   if(!_selected) return;
   sessionStorage.setItem('crane_bigq_source', _selected.filename);
-  window.location = '/';
+  window.location = '/bigq';
 }
 
 function sendFileToBigQ(e, name) {
   if(e) e.stopPropagation();
   sessionStorage.setItem('crane_bigq_source', name);
-  window.location = '/';
+  window.location = '/bigq';
 }
 
 function sendToIDE() {
