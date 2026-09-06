@@ -121,9 +121,13 @@ This IDE is named after CONNIE, TJ's AI partner. The visual identity is called *
 
 ## Version history
 
-| Version | Date | Description |
-|---|---|---|
-| v1 · Loft Dark | 2026-09-06 | Current production — deep indigo-black ground, old gold accents, parchment composer. Session restore + auto-save wired. |
+| Version | Snapshot file | Date | Description |
+|---|---|---|---|
+| v1 · Loft Dark | `versions/v1-2026-09-06_loft-dark.css` | 2026-09-06 | Original — indigo-black ground (`#08050E`), old gold (`#C8A82A`), parchment composer (`#F2E8CC`). |
+| v2 · Charcoal / Gold / Jade | `versions/v2-2026-09-06_charcoal-gold-jade.css` | 2026-09-06 | Current production. Designed in Claude Design (Figma-style mockup). Charcoal ground (`#0d0d10`), warm gold (`#f0b429`), jade secondary (`#2ee6b8`). Composer is now dark surface — no parchment. Full rgba replacement applied throughout app.py. |
+
+### Note on Claude Design access
+Claude Design produced the mockup and the `tokens-update.css` palette file but did **not** have direct write access to this GitHub repo. All token changes from the mockup were applied manually here via `design/apply.sh` + a surgical patch script. If Claude Design gains repo access in a future session, it should still read `design/HANDOFF.md` first, update `design/tokens.css`, and run `bash design/apply.sh` — never edit the `:root{}` block in app.py directly.
 
 ---
 

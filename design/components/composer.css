@@ -31,27 +31,27 @@
   padding: 0 2px;
 }
 
-/* ── Composer box — ONLY surface with parchment bg ──────────── */
+/* ── Composer box — v2: charcoal surface (no parchment) ─────── */
 #hlComposer {
   width: 100%;
   max-width: 800px;
-  background: var(--composer-bg);
-  border: 1px solid var(--composer-border);
+  background: var(--surface);           /* #16151a — charcoal card */
+  border: 1px solid var(--gold-tint-35);
   border-radius: var(--radius-lg);
   padding: var(--sp-4) var(--sp-4) 10px;
   transition: var(--ease-micro);
   margin-bottom: 34px;
 }
 #hlComposer:focus-within {
-  border-color: var(--composer-border-focus);
-  box-shadow: 0 0 0 3px var(--composer-glow);
+  border-color: var(--gold-tint-40);
+  box-shadow: 0 0 0 3px rgba(240,180,41,.1);
 }
 
 /* ── Chat textarea ───────────────────────────────────────────── */
 #chatInput {
   background: transparent;
   border: none;
-  color: var(--composer-text);
+  color: var(--text);                   /* light text on dark surface */
   font-size: var(--text-body);
   font-family: var(--font-ui);
   outline: none;
@@ -62,15 +62,15 @@
   padding: 10px 12px;
   line-height: 1.6;
 }
-#chatInput::placeholder { color: var(--composer-placeholder); }
+#chatInput::placeholder { color: var(--text-faint); }
 
-/* ── Options row (below textarea — outline only, no fill) ────── */
+/* ── Options row (below textarea — gold tint border, no fill) ── */
 .hl-composer-row {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   margin-top: 10px;
-  border: 1px solid var(--composer-row-border);
+  border: 1px solid var(--gold-tint-14);
   border-radius: var(--radius-md);
   padding: 6px 8px;
   background: transparent;
