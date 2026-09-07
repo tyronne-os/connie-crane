@@ -7309,19 +7309,136 @@ window.addEventListener('DOMContentLoaded',()=>{
 
 
 
-# ── CRANE-CU API stubs ────────────────────────────────────────────────────────
+
+# ── CRANE-CU: A-Team Backend ──────────────────────────────────────────────────
 
 from pydantic import BaseModel as _BM
 
+# ── A-Team roster ─────────────────────────────────────────────────────────────
+ATEAM = {
+    "hannibal": {
+        "name": "Hannibal",
+        "role": "Supervisor & Tactical Dispatcher",
+        "dept": "Orchestration",
+        "model_id": "local:qwen-coder-7b",
+        "model_label": "Qwen2.5-Coder-7B",
+        "color": "#f0b429",
+        "icon": "♟",
+        "brain1": (
+            "You are Hannibal, the Supervisor and Tactical Dispatcher of the CRANE A-Team. "
+            "Parse all incoming prompts or voice-transcription streams and slice them into "
+            "2–5 atomic work orders bound to strict YAML specs (Objectives, Specs, Test Deliverables). "
+            "Maintain multi-project queue concurrency. Never write implementation code directly. "
+            "Enforce the 3-error anti-thrashing limit. Monitor all sub-agent state telemetry. "
+            "Your output is always a structured dispatch plan, never raw code."
+        ),
+        "brain2_template": (
+            "Project-specific work-order breakdown matrices, priority scheduling heuristics, "
+            "and dependency routing rules for active repository branches."
+        ),
+    },
+    "murdock": {
+        "name": "Murdock",
+        "role": "Logic & Architecture Specialist",
+        "dept": "Backend & System Design",
+        "model_id": "local:qwen3-coder-30b",
+        "model_label": "Qwen3-Coder-30B (GPU)",
+        "color": "#38bdf8",
+        "icon": "⚙",
+        "brain1": (
+            "You are Murdock, the Logic and Architecture Specialist of the CRANE A-Team. "
+            "You handle system-level software engineering, database schema topology, complex "
+            "code refactoring, and multi-file dependency mapping. "
+            "Always map out system architecture graphs before outputting code blocks. "
+            "Adhere strictly to SOLID principles and clean separation of concerns. "
+            "Your output is always architecturally sound, production-grade code."
+        ),
+        "brain2_template": (
+            "Project-specific API interface contracts, database migration patterns, "
+            "and security validation schemas."
+        ),
+    },
+    "face": {
+        "name": "Face",
+        "role": "UI/UX & React Flow Frontend Virtuoso",
+        "dept": "Frontend & Canvas",
+        "model_id": "local:qwen-coder-7b",
+        "model_label": "Qwen2.5-Coder-7B",
+        "color": "#2ee6b8",
+        "icon": "◱",
+        "brain1": (
+            "You are Face, the UI/UX and Frontend Virtuoso of the CRANE A-Team. "
+            "You specialize in rapid UI component assembly, design token mapping, "
+            "React Flow canvas state management, and real-time DOM rendering. "
+            "Strictly adhere to the project design system tokens (design/tokens.css). "
+            "Ensure all components compile cleanly with zero layout shifts. "
+            "Your output is always clean, accessible, pixel-perfect frontend code."
+        ),
+        "brain2_template": (
+            "Project-specific component libraries, state management wrappers, "
+            "and canvas interaction handlers."
+        ),
+    },
+    "ba": {
+        "name": "B.A.",
+        "role": "Device, Terminal & Sudo Execution Engine",
+        "dept": "Infrastructure & Operations",
+        "model_id": "local:qwen-coder-3b",
+        "model_label": "Qwen2.5-Coder-3B",
+        "color": "#a78bfa",
+        "icon": "⬡",
+        "brain1": (
+            "You are B.A., the Device, Terminal and Execution Engine of the CRANE A-Team. "
+            "You handle local filesystem manipulation, bash command generation, test suite "
+            "execution, and dependency management. "
+            "Execute safe shell commands autonomously under the trusted sudo protocol. "
+            "Parse compiler errors instantly and report status back to Hannibal. "
+            "Your output is always precise, executable shell or build commands."
+        ),
+        "brain2_template": (
+            "Project-specific build scripts, test runner commands (pytest, npm test), "
+            "and deployment pipelines."
+        ),
+    },
+    "astra": {
+        "name": "Astra",
+        "role": "API Special Ops & Escalation Doctor",
+        "dept": "Prompt Engineering & Failure Recovery",
+        "model_id": "local:qwen3-coder-30b",
+        "model_label": "Gemini 3.8 / Qwen3-30B",
+        "color": "#ef4444",
+        "icon": "✦",
+        "brain1": (
+            "You are Astra, the Escalation Doctor of the CRANE A-Team. "
+            "You specialize in semantic failure diagnosis, prompt structural re-engineering, "
+            "and edge-case resolution. "
+            "You are invoked ONLY when a local worker breaches the 3-error thrashing threshold. "
+            "Analyze failure logs, refactor prompt logic, and return updated specifications "
+            "to Hannibal. Never handle routine tasks. Your output is always a corrected "
+            "work-order spec or a restructured prompt."
+        ),
+        "brain2_template": (
+            "Advanced edge-case debugging strategies, error-trace pattern recognition, "
+            "and semantic prompt optimization loops."
+        ),
+    },
+}
+
+# Per-agent dynamic Brain 2 store (project skills injected at runtime)
+_agent_brain2: dict = {k: v["brain2_template"] for k, v in ATEAM.items()}
+
 class CURunRequest(_BM):
     prompt: str
-    department: str = "supervisor"
-    mode: str = "auto"  # auto | plan | superman
+    mode: str = "auto"
 
 class CUChatRequest(_BM):
     message: str
+    agent: str = "hannibal"
     node_id: str = ""
-    department: str = "supervisor"
+
+class CUBrain2Request(_BM):
+    agent: str
+    skill: str
 
 _cu_run_log: list = []
 
@@ -7331,24 +7448,24 @@ async def cu_run(req: CURunRequest):
     entry = {
         "id": f"run_{int(_t.time()*1000)}",
         "prompt": req.prompt,
-        "department": req.department,
         "mode": req.mode,
-        "status": "queued",
+        "status": "running",
         "work_orders": [],
         "ts": _t.time(),
     }
-    # Slice into 2-5 atomic work orders via CAT classification
     cat_resp = await classify_cat(CatRequest(prompt=req.prompt))
     cat = cat_resp["cat"]
+    agents = ["hannibal", "murdock", "face", "ba", "astra"]
     n_orders = min(max(cat, 2), 5)
     for i in range(n_orders):
+        agent_key = agents[i % len(agents)]
         entry["work_orders"].append({
             "id": f"WO-{i+1:02d}",
             "label": f"Work Order {i+1}",
             "status": "pending",
-            "department": ["supervisor","engineer","device","logistics","vision"][i % 5],
+            "agent": agent_key,
+            "agent_name": ATEAM[agent_key]["name"],
         })
-    entry["status"] = "running"
     _cu_run_log.append(entry)
     return entry
 
@@ -7358,47 +7475,56 @@ async def cu_runs():
 
 @app.post("/api/cu/chat")
 async def cu_chat(req: CUChatRequest):
-    # Route to local model via existing local_chat infrastructure
-    model_map = {
-        "supervisor":  "local:qwen-coder-3b",
-        "engineer":    "local:qwen-coder-14b",
-        "device":      "local:qwen-coder-7b",
-        "logistics":   "local:qwen-coder-3b",
-        "vision":      "local:qwen-coder-7b",
-        "escalation":  "local:qwen3-coder-30b",
-    }
-    model_id = model_map.get(req.department, "local:qwen-coder-3b")
-    system = (
-        f"You are the {req.department.upper()} agent in CRANE-CU. "
-        f"You are part of a multi-agent engineering department. "
-        f"Node context: {req.node_id or 'none'}. "
-        "Be concise, technical, and actionable."
-    )
+    agent_key = req.agent if req.agent in ATEAM else "hannibal"
+    agent = ATEAM[agent_key]
+    brain2 = _agent_brain2.get(agent_key, "")
+    system = f"{agent['brain1']}\n\nBrain 2 (Project Skills): {brain2}"
     result = await local_chat(LocalChatRequest(
-        model=model_id,
+        model=agent["model_id"],
         messages=[{"role": "user", "content": req.message}],
         system=system,
         max_tokens=1024,
     ))
-    return result
+    return {**result, "agent": agent_key, "agent_name": agent["name"]}
+
+@app.get("/api/cu/agents")
+async def cu_agents():
+    return {
+        "agents": {
+            k: {
+                "name": v["name"], "role": v["role"], "dept": v["dept"],
+                "model_label": v["model_label"], "color": v["color"], "icon": v["icon"],
+                "brain1_preview": v["brain1"][:120] + "…",
+                "brain2": _agent_brain2.get(k, ""),
+            }
+            for k, v in ATEAM.items()
+        }
+    }
+
+@app.post("/api/cu/brain2")
+async def cu_set_brain2(req: CUBrain2Request):
+    if req.agent not in ATEAM:
+        return {"error": f"Unknown agent: {req.agent}"}
+    _agent_brain2[req.agent] = req.skill
+    return {"ok": True, "agent": req.agent, "brain2": req.skill}
 
 @app.get("/api/cu/status")
 async def cu_status():
     return {
-        "departments": {
-            "supervisor":  {"model": "Qwen2.5-Coder-3B",  "status": "ready", "cat": 2},
-            "engineer":    {"model": "Qwen2.5-Coder-14B", "status": "ready", "cat": 4},
-            "device":      {"model": "Qwen2.5-Coder-7B",  "status": "ready", "cat": 3},
-            "logistics":   {"model": "Qwen2.5-Coder-3B",  "status": "ready", "cat": 2},
-            "vision":      {"model": "Qwen2.5-Coder-7B",  "status": "ready", "cat": 3},
-            "escalation":  {"model": "Gemini-3.8 / Qwen3-30B", "status": "standby", "cat": 4},
+        "agents": {
+            k: {
+                "name": v["name"], "model": v["model_label"],
+                "status": "ready" if k != "astra" else "standby",
+                "color": v["color"],
+            }
+            for k, v in ATEAM.items()
         },
         "active_runs": len([r for r in _cu_run_log if r.get("status") == "running"]),
         "total_runs": len(_cu_run_log),
     }
 
 
-# ── /cu page ──────────────────────────────────────────────────────────────────
+# ── /cu page (Work Order 2) ───────────────────────────────────────────────────
 
 @app.get("/cu", response_class=HTMLResponse)
 async def serve_cu():
@@ -7411,144 +7537,154 @@ async def serve_cu():
 <style>
 :root{
   --bg:#0d0d10;--panel:#16151a;--card:#1c1b22;--border:#2a2433;
-  --text:#eef2f3;--muted:#8a9296;--gold:#f0b429;--gold-dim:rgba(240,180,41,.12);
-  --cu:#818cf8;--cu-dim:rgba(129,140,248,.12);--cu-border:rgba(129,140,248,.3);
+  --text:#eef2f3;--muted:#8a9296;--text-dim:#63696c;
+  --cu:#818cf8;--cu-dim:rgba(129,140,248,.1);--cu-border:rgba(129,140,248,.28);
   --green:#2ee6b8;--red:#ef4444;--orange:#f59e0b;--blue:#38bdf8;
-  --node-sup:#f0b429;--node-eng:#38bdf8;--node-dev:#2ee6b8;
-  --node-log:#a78bfa;--node-vis:#f59e0b;--node-esc:#ef4444;
+  --gold:#f0b429;
+  --han:#f0b429; --mur:#38bdf8; --fac:#2ee6b8; --ba:#a78bfa; --ast:#ef4444;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;display:flex;flex-direction:column;}
 
 /* ── TOPBAR ── */
-#topbar{height:48px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:16px;flex-shrink:0;}
-.tb-brand{font-weight:800;font-size:15px;letter-spacing:2px;color:var(--cu);}
-.tb-sep{width:1px;height:20px;background:var(--border);}
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:14px;flex-shrink:0;z-index:100;}
+.tb-brand{font-weight:800;font-size:13px;letter-spacing:2px;color:var(--cu);}
 .top-nav{display:flex;gap:2px;}
-.top-nav a{color:var(--muted);text-decoration:none;padding:0 12px;height:36px;display:flex;align-items:center;font-size:12px;font-weight:500;border-radius:6px;transition:.15s;letter-spacing:.3px;}
+.top-nav a{color:var(--muted);text-decoration:none;padding:0 10px;height:32px;display:flex;align-items:center;font-size:12px;font-weight:500;border-radius:5px;transition:.15s;}
 .top-nav a:hover{color:var(--text);background:rgba(255,255,255,.05);}
 .top-nav a.active{color:var(--cu);background:var(--cu-dim);}
-.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
-.status-chip{font-size:10px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;border-radius:4px;border:1px solid var(--cu-border);color:var(--cu);background:var(--cu-dim);}
-.status-chip.live{color:var(--green);border-color:rgba(46,230,184,.3);background:rgba(46,230,184,.08);}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+.chip{font-size:9px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;border-radius:3px;border:1px solid var(--cu-border);color:var(--cu);background:var(--cu-dim);}
+.chip.live{color:var(--green);border-color:rgba(46,230,184,.3);background:rgba(46,230,184,.07);}
 
-/* ── LAYOUT ── */
-#layout{display:flex;flex:1;overflow:hidden;}
+/* ── FULL-BLEED LAYOUT ── */
+#workspace{display:flex;flex:1;overflow:hidden;position:relative;}
 
-/* ── LEFT SIDEBAR ── */
-#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
-.sb-head{padding:12px 14px 8px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);}
-.dept-btn{display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--text);font-size:12px;width:100%;text-align:left;transition:.15s;border-left:2px solid transparent;}
-.dept-btn:hover{background:rgba(255,255,255,.04);}
-.dept-btn.active{background:var(--cu-dim);border-left-color:var(--cu);color:var(--cu);}
-.dept-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
-.dept-model{font-size:9px;color:var(--muted);margin-left:auto;}
-.sb-divider{height:1px;background:var(--border);margin:8px 0;}
-.sb-section{padding:8px 14px 4px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);}
-.run-item{padding:6px 14px;font-size:11px;color:var(--muted);cursor:pointer;transition:.15s;border-left:2px solid transparent;}
-.run-item:hover{color:var(--text);background:rgba(255,255,255,.03);}
-.run-item .ri-status{font-size:9px;font-weight:700;letter-spacing:1px;}
-.ri-status.running{color:var(--green);}
-.ri-status.queued{color:var(--orange);}
-.ri-status.done{color:var(--muted);}
-
-/* ── CANVAS ── */
-#canvas-wrap{flex:1;position:relative;overflow:hidden;background:var(--bg);}
-#rf-canvas{width:100%;height:100%;}
-.grid-bg{
-  position:absolute;inset:0;
-  background-image:radial-gradient(circle,rgba(129,140,248,.12) 1px,transparent 1px);
-  background-size:28px 28px;
-  pointer-events:none;
-}
-/* React Flow node styles */
-.rf-node{position:absolute;border-radius:10px;border:1.5px solid;padding:12px 16px;min-width:160px;cursor:pointer;transition:.2s;user-select:none;font-family:'Inter',sans-serif;}
-.rf-node:hover{filter:brightness(1.15);transform:translateY(-1px);}
-.rf-node.selected{box-shadow:0 0 0 2px var(--cu),0 8px 24px rgba(0,0,0,.6);}
-.rf-node-head{font-size:9px;font-weight:700;letter-spacing:2px;margin-bottom:6px;opacity:.7;}
-.rf-node-title{font-size:13px;font-weight:700;margin-bottom:4px;}
-.rf-node-model{font-size:10px;opacity:.6;}
-.rf-node-status{font-size:9px;font-weight:700;letter-spacing:1px;margin-top:8px;padding:2px 6px;border-radius:3px;display:inline-block;}
-.status-ready{background:rgba(46,230,184,.15);color:#2ee6b8;}
-.status-standby{background:rgba(245,158,11,.15);color:#f59e0b;}
-.status-running{background:rgba(99,102,241,.2);color:#818cf8;}
-.status-error{background:rgba(239,68,68,.15);color:#ef4444;}
-/* node colors */
-.node-sup{background:rgba(240,180,41,.08);border-color:rgba(240,180,41,.35);color:var(--node-sup);}
-.node-eng{background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);color:var(--node-eng);}
-.node-dev{background:rgba(46,230,184,.08);border-color:rgba(46,230,184,.35);color:var(--node-dev);}
-.node-log{background:rgba(167,139,250,.08);border-color:rgba(167,139,250,.35);color:var(--node-log);}
-.node-vis{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.35);color:var(--node-vis);}
-.node-esc{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35);color:var(--node-esc);}
-.node-ingest{background:rgba(129,140,248,.08);border-color:var(--cu-border);color:var(--cu);}
-.node-slicer{background:rgba(129,140,248,.05);border-color:rgba(129,140,248,.2);color:var(--muted);}
-/* SVG edges */
+/* ── CANVAS (left 60%) ── */
+#canvas-wrap{flex:1;position:relative;overflow:hidden;}
+.grid-bg{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(129,140,248,.1) 1px,transparent 1px);background-size:30px 30px;pointer-events:none;}
 #edge-svg{position:absolute;inset:0;pointer-events:none;overflow:visible;}
-.edge{stroke-width:1.5;fill:none;opacity:.5;}
-.edge-animated{stroke-dasharray:6 4;animation:dash 1.2s linear infinite;}
+.edge{stroke-width:1.5;fill:none;}
+.edge-dash{stroke-dasharray:6 4;animation:dash 1.4s linear infinite;}
 @keyframes dash{to{stroke-dashoffset:-20;}}
-/* canvas controls */
-.canvas-controls{position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;}
-.cc-btn{width:32px;height:32px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:.15s;color:var(--muted);}
-.cc-btn:hover{color:var(--text);border-color:var(--cu);}
-.canvas-legend{position:absolute;bottom:16px;left:16px;background:rgba(22,21,26,.9);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:10px;}
-.legend-row{display:flex;align-items:center;gap:8px;padding:2px 0;color:var(--muted);}
-.legend-dot{width:8px;height:8px;border-radius:50%;}
 
-/* ── RIGHT PANEL ── */
-#right-panel{width:340px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
-.rp-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
-.rp-title{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--cu);}
-.rp-dept-badge{font-size:9px;font-weight:700;letter-spacing:1.5px;padding:2px 7px;border-radius:3px;background:var(--cu-dim);border:1px solid var(--cu-border);color:var(--cu);}
-.rp-tabs{display:flex;border-bottom:1px solid var(--border);}
-.rp-tab{flex:1;padding:8px;font-size:10px;font-weight:700;letter-spacing:1px;text-align:center;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:.15s;}
+/* canvas toolbar */
+#canvas-toolbar{position:absolute;top:10px;left:10px;display:flex;gap:6px;z-index:10;}
+.ct-btn{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:10px;font-weight:700;letter-spacing:1px;color:var(--muted);cursor:pointer;transition:.15s;}
+.ct-btn:hover{color:var(--text);border-color:var(--cu);}
+.ct-btn.active{color:var(--cu);border-color:var(--cu);background:var(--cu-dim);}
+
+/* run launcher bar */
+#run-bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:10;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px;width:520px;box-shadow:0 8px 32px rgba(0,0,0,.6);}
+#run-bar textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;height:28px;line-height:1.4;}
+#run-bar textarea::placeholder{color:var(--text-dim);}
+.run-mode{background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:10px;padding:3px 6px;outline:none;}
+.run-fire{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;transition:.15s;}
+.run-fire:hover{background:#6366f1;}
+#run-wo-label{font-size:10px;color:var(--muted);white-space:nowrap;}
+
+/* ── AGENT NODES ── */
+.a-node{position:absolute;width:190px;border-radius:12px;border:1.5px solid;cursor:pointer;transition:.18s;user-select:none;backdrop-filter:blur(4px);}
+.a-node:hover{filter:brightness(1.12);transform:translateY(-2px);}
+.a-node.selected{box-shadow:0 0 0 2px var(--cu),0 12px 36px rgba(0,0,0,.7);}
+.an-head{padding:10px 12px 6px;display:flex;align-items:center;gap:8px;}
+.an-icon{font-size:18px;line-height:1;}
+.an-titles{flex:1;}
+.an-name{font-size:13px;font-weight:800;letter-spacing:.5px;}
+.an-role{font-size:9px;opacity:.65;margin-top:1px;}
+.an-body{padding:0 12px 10px;}
+.an-model{font-size:9px;font-weight:700;letter-spacing:1px;opacity:.55;margin-bottom:6px;font-family:'JetBrains Mono',monospace;}
+.an-brains{display:flex;gap:4px;}
+.brain-pill{font-size:8px;font-weight:700;letter-spacing:1px;padding:2px 7px;border-radius:3px;cursor:pointer;transition:.12s;}
+.brain-pill.b1{background:rgba(255,255,255,.08);color:var(--muted);}
+.brain-pill.b1:hover{background:rgba(255,255,255,.14);color:var(--text);}
+.brain-pill.b2{background:rgba(129,140,248,.15);color:var(--cu);border:1px solid var(--cu-border);}
+.brain-pill.b2:hover{background:rgba(129,140,248,.25);}
+.an-status{font-size:8px;font-weight:700;letter-spacing:1px;margin-top:6px;padding:2px 7px;border-radius:3px;display:inline-block;}
+.st-ready{background:rgba(46,230,184,.13);color:#2ee6b8;}
+.st-standby{background:rgba(245,158,11,.13);color:#f59e0b;}
+.st-running{background:rgba(129,140,248,.2);color:#818cf8;}
+.st-error{background:rgba(239,68,68,.13);color:#ef4444;}
+
+/* ── RIGHT PANEL (40%) ── */
+#right-panel{width:420px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+
+/* agent header */
+#rp-agent-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+.rp-agent-icon{font-size:22px;}
+.rp-agent-info{flex:1;}
+.rp-agent-name{font-size:14px;font-weight:800;letter-spacing:.5px;}
+.rp-agent-role{font-size:10px;color:var(--muted);margin-top:1px;}
+.rp-agent-model{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);margin-top:3px;}
+
+/* tabs */
+.rp-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
+.rp-tab{flex:1;padding:8px 0;font-size:9px;font-weight:700;letter-spacing:1.5px;text-align:center;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:.15s;}
 .rp-tab.active{color:var(--cu);border-bottom-color:var(--cu);}
-.rp-body{flex:1;overflow-y:auto;padding:12px;}
-.rp-body::-webkit-scrollbar{width:4px;}
-.rp-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 
-/* work order cards */
-.wo-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
-.wo-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-.wo-id{font-size:9px;font-weight:700;letter-spacing:1.5px;color:var(--cu);font-family:'JetBrains Mono',monospace;}
-.wo-dept{font-size:9px;color:var(--muted);}
-.wo-status-dot{width:6px;height:6px;border-radius:50%;margin-left:auto;}
-.wo-label{font-size:12px;font-weight:600;margin-bottom:4px;}
-.wo-spec{font-size:10px;color:var(--muted);line-height:1.5;}
+/* brain panels */
+.brain-panel{flex:1;overflow-y:auto;padding:14px;display:none;}
+.brain-panel.show{display:block;}
+.brain-panel::-webkit-scrollbar{width:3px;}
+.brain-panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.bp-label{font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);margin-bottom:8px;}
+.bp-text{font-size:11px;line-height:1.65;color:var(--text);background:var(--card);border:1px solid var(--border);border-radius:7px;padding:10px 12px;}
+.bp-edit{width:100%;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:11px;font-family:'Inter',sans-serif;padding:10px 12px;resize:none;outline:none;min-height:100px;margin-top:10px;transition:.15s;}
+.bp-edit:focus{border-color:var(--cu);}
+.bp-save-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:10px;font-weight:700;cursor:pointer;margin-top:8px;transition:.15s;}
+.bp-save-btn:hover{background:#6366f1;}
+.bp-saved{font-size:9px;color:var(--green);margin-left:8px;opacity:0;transition:.3s;}
 
-/* meter */
-.meter-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;}
-.meter-row:last-child{border:none;}
-.meter-val{font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--cu);}
-.meter-bar-wrap{height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:8px;}
-.meter-bar{height:4px;background:var(--cu);border-radius:2px;transition:.5s;}
-
-/* chat */
-#cu-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:0;}
-#cu-msgs::-webkit-scrollbar{width:4px;}
+/* chat panel */
+#chat-panel{flex:1;display:none;flex-direction:column;min-height:0;}
+#chat-panel.show{display:flex;}
+#cu-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:7px;}
+#cu-msgs::-webkit-scrollbar{width:3px;}
 #cu-msgs::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-.cu-msg{padding:8px 10px;border-radius:7px;font-size:12px;line-height:1.55;max-width:95%;}
+.cu-msg{padding:8px 10px;border-radius:7px;font-size:12px;line-height:1.55;max-width:96%;}
 .cu-msg.user{background:var(--cu-dim);border:1px solid var(--cu-border);align-self:flex-end;}
 .cu-msg.agent{background:var(--card);border:1px solid var(--border);align-self:flex-start;}
-.cu-msg.sys{background:rgba(240,180,41,.06);border:1px solid rgba(240,180,41,.15);color:var(--muted);font-size:10px;font-style:italic;align-self:center;}
-.cu-msg .msg-role{font-size:9px;font-weight:700;letter-spacing:1.5px;margin-bottom:4px;opacity:.6;}
-.cu-composer{border-top:1px solid var(--border);padding:10px;}
-.cu-composer textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;padding:8px 10px;resize:none;outline:none;min-height:60px;transition:.15s;}
-.cu-composer textarea:focus{border-color:var(--cu);}
-.cu-composer-bar{display:flex;align-items:center;gap:8px;margin-top:6px;}
-.cu-send-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s;margin-left:auto;}
-.cu-send-btn:hover{background:#6366f1;}
-.cu-dept-sel{background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;padding:4px 8px;outline:none;}
+.cu-msg.sys{background:rgba(240,180,41,.05);border:1px solid rgba(240,180,41,.12);color:var(--muted);font-size:10px;font-style:italic;align-self:center;max-width:85%;}
+.msg-role{font-size:8px;font-weight:700;letter-spacing:1.5px;margin-bottom:4px;opacity:.55;}
+.cu-composer-wrap{border-top:1px solid var(--border);padding:10px;}
+.cu-composer-wrap textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;padding:8px 10px;resize:none;outline:none;min-height:52px;transition:.15s;}
+.cu-composer-wrap textarea:focus{border-color:var(--cu);}
+.cu-compose-bar{display:flex;align-items:center;gap:8px;margin-top:6px;}
+.cu-send{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:10px;font-weight:700;cursor:pointer;margin-left:auto;transition:.15s;}
+.cu-send:hover{background:#6366f1;}
 
-/* run launcher */
-.run-launcher{padding:12px;border-bottom:1px solid var(--border);}
-.run-launcher textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;resize:none;min-height:52px;outline:none;font-family:'Inter',sans-serif;}
-.run-launcher textarea:focus{border-color:var(--cu);}
-.run-launch-bar{display:flex;gap:8px;margin-top:6px;align-items:center;}
-.run-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 18px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s;}
-.run-btn:hover{background:#6366f1;}
-.run-mode-sel{background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;padding:4px 8px;outline:none;}
-.run-label{font-size:9px;color:var(--muted);margin-left:auto;}
+/* preview panel */
+#preview-panel{flex:1;display:none;flex-direction:column;}
+#preview-panel.show{display:flex;}
+.preview-bar{padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:10px;color:var(--muted);flex-shrink:0;}
+.preview-url{flex:1;background:var(--card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text);outline:none;}
+.preview-go{background:var(--card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;color:var(--text);transition:.15s;}
+.preview-go:hover{border-color:var(--cu);color:var(--cu);}
+#preview-frame{flex:1;border:none;background:#fff;}
+.preview-placeholder{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--muted);}
+.preview-placeholder .pi{font-size:36px;opacity:.3;}
+
+/* work orders panel */
+#wo-panel{flex:1;overflow-y:auto;padding:12px;display:none;}
+#wo-panel.show{display:block;}
+.wo-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
+.wo-card-head{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.wo-id{font-size:9px;font-weight:700;letter-spacing:1.5px;font-family:'JetBrains Mono',monospace;color:var(--cu);}
+.wo-agent-name{font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;}
+.wo-status-dot{width:6px;height:6px;border-radius:50%;margin-left:auto;flex-shrink:0;}
+.wo-label{font-size:12px;font-weight:600;margin-bottom:3px;}
+.wo-meta{font-size:10px;color:var(--muted);}
+
+/* meter panel */
+#meter-panel{flex:1;overflow-y:auto;padding:12px;display:none;}
+#meter-panel.show{display:block;}
+.m-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:11px;}
+.m-row:last-child{border:none;}
+.m-val{font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--cu);}
+.m-agent-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:11px;}
+.m-agent-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.m-agent-model{font-size:9px;color:var(--muted);margin-left:auto;font-family:'JetBrains Mono',monospace;}
 </style>
 </head>
 <body>
@@ -7556,7 +7692,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 <!-- TOPBAR -->
 <div id="topbar">
   <span class="tb-brand">⚙ CU DEPT</span>
-  <div class="tb-sep"></div>
+  <div style="width:1px;height:20px;background:var(--border)"></div>
   <nav class="top-nav">
     <a href="/ide">Home</a>
     <a href="/studio">Studio</a>
@@ -7564,505 +7700,462 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     <a href="/cu" class="active">CU Dept</a>
   </nav>
   <div class="tb-right">
-    <span class="status-chip" id="cuStatusChip">INITIALIZING</span>
-    <span style="font-size:10px;color:var(--muted)" id="cuActiveRuns">0 active runs</span>
+    <span class="chip" id="cuChip">READY</span>
+    <span style="font-size:10px;color:var(--muted)" id="cuRunCount">0 runs</span>
   </div>
 </div>
 
-<!-- LAYOUT -->
-<div id="layout">
-
-  <!-- SIDEBAR -->
-  <div id="sidebar">
-    <div class="sb-head">DEPARTMENTS</div>
-
-    <button class="dept-btn active" data-dept="supervisor" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-sup)"></span>
-      <span>Supervisor</span>
-      <span class="dept-model">3B</span>
-    </button>
-    <button class="dept-btn" data-dept="engineer" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-eng)"></span>
-      <span>Engineer</span>
-      <span class="dept-model">14B</span>
-    </button>
-    <button class="dept-btn" data-dept="device" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-dev)"></span>
-      <span>Device Mgmt</span>
-      <span class="dept-model">7B</span>
-    </button>
-    <button class="dept-btn" data-dept="logistics" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-log)"></span>
-      <span>Logistics</span>
-      <span class="dept-model">3B</span>
-    </button>
-    <button class="dept-btn" data-dept="vision" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-vis)"></span>
-      <span>Vision & UI</span>
-      <span class="dept-model">7B</span>
-    </button>
-
-    <div class="sb-divider"></div>
-
-    <button class="dept-btn" data-dept="escalation" onclick="selectDept(this)">
-      <span class="dept-dot" style="background:var(--node-esc)"></span>
-      <span>Escalation</span>
-      <span class="dept-model">30B+</span>
-    </button>
-
-    <div class="sb-divider"></div>
-    <div class="sb-section">RECENT RUNS</div>
-    <div id="sbRunList">
-      <div style="padding:8px 14px;font-size:10px;color:var(--muted)">No runs yet</div>
-    </div>
-  </div>
+<!-- WORKSPACE -->
+<div id="workspace">
 
   <!-- CANVAS -->
   <div id="canvas-wrap">
     <div class="grid-bg"></div>
+    <svg id="edge-svg"></svg>
 
-    <svg id="edge-svg">
-      <!-- edges drawn by JS -->
-    </svg>
-
-    <!-- NODES — positioned absolutely -->
-    <!-- Ingestion -->
-    <div class="rf-node node-ingest" id="node-ingest" style="left:40px;top:120px;min-width:140px" onclick="selectNode('ingest')">
-      <div class="rf-node-head">INPUT</div>
-      <div class="rf-node-title">Ingestion</div>
-      <div class="rf-node-model">Voice / Prompt</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <!-- CANVAS TOOLBAR -->
+    <div id="canvas-toolbar">
+      <div class="ct-btn" onclick="resetLayout()">⊞ Reset</div>
+      <div class="ct-btn" id="animBtn" onclick="toggleAnim()">◎ Animate</div>
     </div>
 
-    <!-- Work-Order Slicer -->
-    <div class="rf-node node-slicer" id="node-slicer" style="left:230px;top:120px" onclick="selectNode('slicer')">
-      <div class="rf-node-head">ORCHESTRATION</div>
-      <div class="rf-node-title">Work-Order Slicer</div>
-      <div class="rf-node-model">2–5 Atomic WOs</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <!-- A-TEAM NODES -->
+    <div class="a-node" id="node-hannibal" data-agent="hannibal"
+         style="left:30px;top:80px;background:rgba(240,180,41,.07);border-color:rgba(240,180,41,.3);color:var(--han)">
+      <div class="an-head">
+        <span class="an-icon">♟</span>
+        <div class="an-titles">
+          <div class="an-name">Hannibal</div>
+          <div class="an-role">Supervisor & Dispatcher</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen2.5-Coder-7B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'hannibal','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'hannibal','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-hannibal">READY</span>
+      </div>
     </div>
 
-    <!-- Supervisor -->
-    <div class="rf-node node-sup" id="node-supervisor" style="left:460px;top:60px" onclick="selectNode('supervisor')">
-      <div class="rf-node-head">SUPERVISOR</div>
-      <div class="rf-node-title">Dispatcher</div>
-      <div class="rf-node-model">Qwen2.5-Coder-3B</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <div class="a-node" id="node-murdock" data-agent="murdock"
+         style="left:30px;top:240px;background:rgba(56,189,248,.07);border-color:rgba(56,189,248,.3);color:var(--mur)">
+      <div class="an-head">
+        <span class="an-icon">⚙</span>
+        <div class="an-titles">
+          <div class="an-name">Murdock</div>
+          <div class="an-role">Architecture Specialist</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen3-Coder-30B (GPU)</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'murdock','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'murdock','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-murdock">READY</span>
+      </div>
     </div>
 
-    <!-- Engineer -->
-    <div class="rf-node node-eng" id="node-engineer" style="left:680px;top:30px" onclick="selectNode('engineer')">
-      <div class="rf-node-head">DEPT · ENGINEER</div>
-      <div class="rf-node-title">Code & IDE</div>
-      <div class="rf-node-model">Qwen2.5-Coder-14B</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <div class="a-node" id="node-face" data-agent="face"
+         style="left:30px;top:400px;background:rgba(46,230,184,.07);border-color:rgba(46,230,184,.3);color:var(--fac)">
+      <div class="an-head">
+        <span class="an-icon">◱</span>
+        <div class="an-titles">
+          <div class="an-name">Face</div>
+          <div class="an-role">Frontend Virtuoso</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen2.5-Coder-7B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'face','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'face','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-face">READY</span>
+      </div>
     </div>
 
-    <!-- Device -->
-    <div class="rf-node node-dev" id="node-device" style="left:680px;top:160px" onclick="selectNode('device')">
-      <div class="rf-node-head">DEPT · DEVICE</div>
-      <div class="rf-node-title">Device Mgmt</div>
-      <div class="rf-node-model">Qwen2.5-Coder-7B</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <div class="a-node" id="node-ba" data-agent="ba"
+         style="left:30px;top:540px;background:rgba(167,139,250,.07);border-color:rgba(167,139,250,.3);color:var(--ba)">
+      <div class="an-head">
+        <span class="an-icon">⬡</span>
+        <div class="an-titles">
+          <div class="an-name">B.A.</div>
+          <div class="an-role">Execution Engine</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen2.5-Coder-3B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'ba','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'ba','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-ba">READY</span>
+      </div>
     </div>
 
-    <!-- Logistics -->
-    <div class="rf-node node-log" id="node-logistics" style="left:680px;top:280px" onclick="selectNode('logistics')">
-      <div class="rf-node-head">DEPT · LOGISTICS</div>
-      <div class="rf-node-title">Vault / GitHub / HF</div>
-      <div class="rf-node-model">Qwen2.5-Coder-3B</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <!-- ESCALATION NODE (center-right of canvas) -->
+    <div class="a-node" id="node-astra" data-agent="astra"
+         style="left:260px;top:340px;width:200px;background:rgba(239,68,68,.07);border-color:rgba(239,68,68,.3);color:var(--ast)">
+      <div class="an-head">
+        <span class="an-icon">✦</span>
+        <div class="an-titles">
+          <div class="an-name">Astra</div>
+          <div class="an-role">Escalation Doctor</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Gemini 3.8 / Qwen3-30B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'astra','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'astra','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-standby" id="st-astra">STANDBY</span>
+      </div>
     </div>
 
-    <!-- Vision -->
-    <div class="rf-node node-vis" id="node-vision" style="left:680px;top:390px" onclick="selectNode('vision')">
-      <div class="rf-node-head">DEPT · VISION</div>
-      <div class="rf-node-title">Vision & UI Render</div>
-      <div class="rf-node-model">Qwen2.5-Coder-7B</div>
-      <span class="rf-node-status status-ready">READY</span>
+    <!-- RUN LAUNCHER BAR -->
+    <div id="run-bar">
+      <textarea id="runPrompt" placeholder="Describe what to build… Hannibal slices it into work orders" rows="1"></textarea>
+      <select class="run-mode" id="runMode">
+        <option value="plan">Plan</option>
+        <option value="auto" selected>Auto</option>
+        <option value="superman">Superman</option>
+      </select>
+      <button class="run-fire" onclick="launchRun()">▶ Launch</button>
+      <span id="run-wo-label" class="run-wo-label"></span>
     </div>
-
-    <!-- Escalation Bridge -->
-    <div class="rf-node node-esc" id="node-escalation" style="left:460px;top:340px" onclick="selectNode('escalation')">
-      <div class="rf-node-head">ESCALATION BRIDGE</div>
-      <div class="rf-node-title">Gemini / Qwen3-30B</div>
-      <div class="rf-node-model">3-error threshold</div>
-      <span class="rf-node-status status-standby">STANDBY</span>
-    </div>
-
-    <!-- Canvas controls -->
-    <div class="canvas-controls">
-      <div class="cc-btn" onclick="resetLayout()" title="Reset layout">⊞</div>
-      <div class="cc-btn" onclick="toggleEdgeAnim()" title="Toggle animation" id="edgeAnimBtn">◎</div>
-    </div>
-
-    <!-- Legend -->
-    <div class="canvas-legend">
-      <div class="legend-row"><div class="legend-dot" style="background:var(--cu)"></div>Orchestration</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-sup)"></div>Supervisor</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-eng)"></div>Engineer</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-dev)"></div>Device</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-log)"></div>Logistics</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-vis)"></div>Vision</div>
-      <div class="legend-row"><div class="legend-dot" style="background:var(--node-esc)"></div>Escalation</div>
-    </div>
-  </div>
+  </div><!-- /canvas-wrap -->
 
   <!-- RIGHT PANEL -->
   <div id="right-panel">
 
-    <!-- Run launcher -->
-    <div class="run-launcher">
-      <textarea id="runPrompt" placeholder="Describe what you want built… (voice or text)&#10;e.g. Build a login page with email + password auth"></textarea>
-      <div class="run-launch-bar">
-        <select class="run-mode-sel" id="runMode">
-          <option value="plan">Plan</option>
-          <option value="auto" selected>Auto</option>
-          <option value="superman">Superman</option>
-        </select>
-        <button class="run-btn" onclick="launchRun()">▶ Launch Run</button>
-        <span class="run-label" id="runWoCount">—</span>
+    <!-- Agent header -->
+    <div id="rp-agent-head">
+      <span class="rp-agent-icon" id="rpIcon">♟</span>
+      <div class="rp-agent-info">
+        <div class="rp-agent-name" id="rpName">Hannibal</div>
+        <div class="rp-agent-role" id="rpRole">Supervisor & Tactical Dispatcher</div>
+        <div class="rp-agent-model" id="rpModel">Qwen2.5-Coder-7B</div>
       </div>
+      <span class="an-status st-ready" id="rpStatus" style="margin-left:auto;flex-shrink:0">READY</span>
     </div>
 
     <!-- Tabs -->
     <div class="rp-tabs">
-      <div class="rp-tab active" id="tab-chat" onclick="switchTab('chat')">CHAT</div>
-      <div class="rp-tab" id="tab-workorders" onclick="switchTab('workorders')">WORK ORDERS</div>
-      <div class="rp-tab" id="tab-meter" onclick="switchTab('meter')">METER</div>
+      <div class="rp-tab active" id="tab-b1"       onclick="switchTab('b1')">BRAIN 1</div>
+      <div class="rp-tab"        id="tab-b2"       onclick="switchTab('b2')">BRAIN 2</div>
+      <div class="rp-tab"        id="tab-chat"     onclick="switchTab('chat')">CHAT</div>
+      <div class="rp-tab"        id="tab-preview"  onclick="switchTab('preview')">PREVIEW</div>
+      <div class="rp-tab"        id="tab-wo"       onclick="switchTab('wo')">ORDERS</div>
+      <div class="rp-tab"        id="tab-meter"    onclick="switchTab('meter')">METER</div>
     </div>
 
-    <!-- Panel header -->
-    <div class="rp-head">
-      <span class="rp-title" id="rpTitle">SUPERVISOR</span>
-      <span class="rp-dept-badge" id="rpBadge">DISPATCHER</span>
+    <!-- Brain 1 panel (read-only) -->
+    <div class="brain-panel show" id="panel-b1">
+      <div class="bp-label">BRAIN 1 — AGENT EXPERTISE (READ-ONLY)</div>
+      <div class="bp-text" id="b1-text">Select an agent node to inspect Brain 1.</div>
     </div>
 
-    <!-- Chat view -->
-    <div id="view-chat" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+    <!-- Brain 2 panel (editable) -->
+    <div class="brain-panel" id="panel-b2">
+      <div class="bp-label">BRAIN 2 — PROJECT SKILLS (LIVE EDITABLE)</div>
+      <div class="bp-text" id="b2-text" style="color:var(--muted);font-size:10px">Current project skills injected into this agent.</div>
+      <textarea class="bp-edit" id="b2-edit" placeholder="Paste project-specific skills, conventions, or failure modes for this agent…"></textarea>
+      <div style="display:flex;align-items:center">
+        <button class="bp-save-btn" onclick="saveBrain2()">Save Brain 2</button>
+        <span class="bp-saved" id="b2-saved">✓ Saved</span>
+      </div>
+    </div>
+
+    <!-- Chat panel -->
+    <div id="chat-panel">
       <div id="cu-msgs"></div>
-      <div class="cu-composer">
-        <textarea id="cuChatInput" placeholder="Ask this department agent…" rows="2"
+      <div class="cu-composer-wrap">
+        <textarea id="cuInput" placeholder="Ask this agent…" rows="2"
           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();cuSend();}"></textarea>
-        <div class="cu-composer-bar">
-          <select class="cu-dept-sel" id="cuDeptSel" onchange="syncDeptSelect()">
-            <option value="supervisor">Supervisor</option>
-            <option value="engineer">Engineer</option>
-            <option value="device">Device Mgmt</option>
-            <option value="logistics">Logistics</option>
-            <option value="vision">Vision & UI</option>
-            <option value="escalation">Escalation</option>
-          </select>
-          <button class="cu-send-btn" onclick="cuSend()">Send ▸</button>
+        <div class="cu-compose-bar">
+          <span style="font-size:10px;color:var(--muted)" id="chatAgentLabel">→ Hannibal</span>
+          <button class="cu-send" onclick="cuSend()">Send ▸</button>
         </div>
       </div>
     </div>
 
-    <!-- Work orders view -->
-    <div id="view-workorders" style="display:none;flex:1;overflow-y:auto;padding:12px;">
+    <!-- Preview panel -->
+    <div id="preview-panel">
+      <div class="preview-bar">
+        <input class="preview-url" id="previewUrl" value="http://127.0.0.1:8000/ide" placeholder="Enter URL to preview…"/>
+        <button class="preview-go" onclick="loadPreview()">Go</button>
+        <button class="preview-go" onclick="reloadPreview()">↺</button>
+      </div>
+      <iframe id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+    </div>
+
+    <!-- Work Orders panel -->
+    <div id="wo-panel">
       <div id="woList">
-        <div style="color:var(--muted);font-size:11px;text-align:center;padding:32px 0">No active run.<br>Launch a run above to see work orders.</div>
+        <div style="color:var(--muted);font-size:11px;text-align:center;padding:40px 0">No active run. Launch a run from the canvas.</div>
       </div>
     </div>
 
-    <!-- Meter view -->
-    <div id="view-meter" style="display:none;flex:1;overflow-y:auto;padding:12px;">
-      <div id="meterView">
-        <div class="meter-row"><span>Active Runs</span><span class="meter-val" id="mActiveRuns">0</span></div>
-        <div class="meter-row"><span>Total Runs</span><span class="meter-val" id="mTotalRuns">0</span></div>
-        <div class="meter-row"><span>Departments Ready</span><span class="meter-val" id="mDeptsReady">—</span></div>
-        <div class="meter-row"><span>Escalation</span><span class="meter-val" id="mEscalation">STANDBY</span></div>
-        <div style="margin-top:12px;font-size:9px;color:var(--muted);letter-spacing:1px">DEPARTMENT STATUS</div>
-        <div id="deptStatusList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
-      </div>
+    <!-- Meter panel -->
+    <div id="meter-panel">
+      <div class="m-row"><span>Active Runs</span><span class="m-val" id="mActive">0</span></div>
+      <div class="m-row"><span>Total Runs</span><span class="m-val" id="mTotal">0</span></div>
+      <div style="margin:12px 0 6px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted)">A-TEAM STATUS</div>
+      <div id="mAgentList"></div>
     </div>
 
-  </div>
-</div>
+  </div><!-- /right-panel -->
+</div><!-- /workspace -->
 
 <script>
-// ── STATE ─────────────────────────────────────────────────────────────────
-let _activeDept = 'supervisor';
-let _activeTab = 'chat';
-let _selectedNode = null;
-let _edgeAnimOn = true;
-let _runs = [];
-
-const DEPT_META = {
-  supervisor: {label:'SUPERVISOR', badge:'DISPATCHER', color:'var(--node-sup)'},
-  engineer:   {label:'ENGINEER',   badge:'CODE & IDE',  color:'var(--node-eng)'},
-  device:     {label:'DEVICE',     badge:'DEVICE MGMT', color:'var(--node-dev)'},
-  logistics:  {label:'LOGISTICS',  badge:'VAULT/GH/HF', color:'var(--node-log)'},
-  vision:     {label:'VISION',     badge:'UI RENDER',   color:'var(--node-vis)'},
-  escalation: {label:'ESCALATION', badge:'BRIDGE',      color:'var(--node-esc)'},
+// ── AGENT DATA (mirrors backend) ──────────────────────────────────────────
+const AGENTS = {
+  hannibal:{ name:'Hannibal', role:'Supervisor & Tactical Dispatcher', model:'Qwen2.5-Coder-7B', icon:'♟', color:'var(--han)', status:'ready' },
+  murdock: { name:'Murdock',  role:'Logic & Architecture Specialist',  model:'Qwen3-Coder-30B', icon:'⚙',  color:'var(--mur)', status:'ready' },
+  face:    { name:'Face',     role:'UI/UX & Frontend Virtuoso',        model:'Qwen2.5-Coder-7B', icon:'◱', color:'var(--fac)', status:'ready' },
+  ba:      { name:'B.A.',     role:'Device & Execution Engine',        model:'Qwen2.5-Coder-3B', icon:'⬡', color:'var(--ba)',  status:'ready' },
+  astra:   { name:'Astra',    role:'Escalation Doctor',                model:'Gemini 3.8 / Qwen3-30B', icon:'✦', color:'var(--ast)', status:'standby' },
 };
 
-// ── EDGES (SVG) ───────────────────────────────────────────────────────────
+// ── STATE ─────────────────────────────────────────────────────────────────
+let _agent = 'hannibal';
+let _tab = 'b1';
+let _animOn = true;
+let _brain2Cache = {};
+let _runs = [];
+
+// ── EDGES ─────────────────────────────────────────────────────────────────
 const EDGES = [
-  {from:'node-ingest',    to:'node-slicer',     color:'rgba(129,140,248,.5)'},
-  {from:'node-slicer',    to:'node-supervisor', color:'rgba(240,180,41,.5)'},
-  {from:'node-supervisor',to:'node-engineer',   color:'rgba(56,189,248,.5)'},
-  {from:'node-supervisor',to:'node-device',     color:'rgba(46,230,184,.5)'},
-  {from:'node-supervisor',to:'node-logistics',  color:'rgba(167,139,250,.5)'},
-  {from:'node-supervisor',to:'node-vision',     color:'rgba(245,158,11,.5)'},
-  {from:'node-supervisor',to:'node-escalation', color:'rgba(239,68,68,.4)', dashed:true},
-  {from:'node-escalation',to:'node-supervisor', color:'rgba(239,68,68,.3)', dashed:true},
+  {from:'node-hannibal', to:'node-murdock', color:'rgba(240,180,41,.35)'},
+  {from:'node-hannibal', to:'node-face',    color:'rgba(240,180,41,.35)'},
+  {from:'node-hannibal', to:'node-ba',      color:'rgba(240,180,41,.35)'},
+  {from:'node-hannibal', to:'node-astra',   color:'rgba(239,68,68,.3)', dash:true},
+  {from:'node-astra',    to:'node-hannibal',color:'rgba(239,68,68,.25)',dash:true},
 ];
-
-function nodeCenter(id) {
-  const el = document.getElementById(id);
-  if (!el) return {x:0,y:0};
-  return {
-    x: el.offsetLeft + el.offsetWidth / 2,
-    y: el.offsetTop + el.offsetHeight / 2,
-  };
-}
-
-function drawEdges() {
-  const svg = document.getElementById('edge-svg');
-  svg.innerHTML = '';
-  EDGES.forEach(e => {
-    const a = nodeCenter(e.from), b = nodeCenter(e.to);
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const mx = a.x + dx * 0.5, my = a.y;
-    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
-    path.setAttribute('d', `M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`);
-    path.setAttribute('stroke', e.color);
-    path.classList.add('edge');
-    if (e.dashed && _edgeAnimOn) path.classList.add('edge-animated');
-    svg.appendChild(path);
+function nodeCtr(id){ const e=document.getElementById(id); return e?{x:e.offsetLeft+e.offsetWidth/2,y:e.offsetTop+e.offsetHeight/2}:{x:0,y:0}; }
+function drawEdges(){
+  const svg=document.getElementById('edge-svg'); svg.innerHTML='';
+  EDGES.forEach(e=>{
+    const a=nodeCtr(e.from),b=nodeCtr(e.to);
+    const mx=a.x+20;
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M${a.x},${a.y} C${mx+80},${a.y} ${b.x-80},${b.y} ${b.x},${b.y}`);
+    p.setAttribute('stroke',e.color); p.classList.add('edge');
+    if(e.dash&&_animOn) p.classList.add('edge-dash');
+    svg.appendChild(p);
   });
 }
-
-window.addEventListener('resize', drawEdges);
-setTimeout(drawEdges, 100);
+window.addEventListener('resize',drawEdges);
+setTimeout(drawEdges,120);
 
 // ── NODE DRAG ─────────────────────────────────────────────────────────────
-function makeDraggable(el) {
-  let ox, oy, startL, startT, dragging = false;
-  el.addEventListener('mousedown', e => {
-    if (e.target.tagName === 'BUTTON') return;
-    dragging = true;
-    ox = e.clientX; oy = e.clientY;
-    startL = el.offsetLeft; startT = el.offsetTop;
-    e.preventDefault();
+function makeDraggable(el){
+  let ox,oy,sl,st,drag=false;
+  el.addEventListener('mousedown',e=>{
+    if(e.target.tagName==='SPAN'&&e.target.classList.contains('brain-pill'))return;
+    drag=true; ox=e.clientX; oy=e.clientY; sl=el.offsetLeft; st=el.offsetTop; e.preventDefault();
   });
-  document.addEventListener('mousemove', e => {
-    if (!dragging) return;
-    el.style.left = (startL + e.clientX - ox) + 'px';
-    el.style.top  = (startT + e.clientY - oy) + 'px';
-    drawEdges();
-  });
-  document.addEventListener('mouseup', () => { dragging = false; });
+  document.addEventListener('mousemove',e=>{ if(!drag)return; el.style.left=(sl+e.clientX-ox)+'px'; el.style.top=(st+e.clientY-oy)+'px'; drawEdges(); });
+  document.addEventListener('mouseup',()=>{ drag=false; });
 }
-document.querySelectorAll('.rf-node').forEach(makeDraggable);
+document.querySelectorAll('.a-node').forEach(n=>{ makeDraggable(n); n.addEventListener('click',()=>selectAgent(n.dataset.agent)); });
 
-// ── NODE SELECT ───────────────────────────────────────────────────────────
-function selectNode(id) {
-  document.querySelectorAll('.rf-node').forEach(n => n.classList.remove('selected'));
-  const el = document.getElementById('node-' + id);
-  if (el) el.classList.add('selected');
-  _selectedNode = id;
-  if (DEPT_META[id]) {
-    selectDept(document.querySelector(`[data-dept="${id}"]`));
-  }
-}
-
-// ── DEPT SELECT ───────────────────────────────────────────────────────────
-function selectDept(btn) {
-  if (!btn) return;
-  document.querySelectorAll('.dept-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  _activeDept = btn.dataset.dept;
-  const meta = DEPT_META[_activeDept] || {};
-  document.getElementById('rpTitle').textContent = meta.label || _activeDept.toUpperCase();
-  document.getElementById('rpBadge').textContent = meta.badge || '';
-  document.getElementById('rpBadge').style.borderColor = meta.color || 'var(--cu-border)';
-  document.getElementById('rpBadge').style.color = meta.color || 'var(--cu)';
-  document.getElementById('cuDeptSel').value = _activeDept;
-  appendMsg('sys', `Switched to ${meta.label || _activeDept} department`);
+// ── AGENT SELECT ──────────────────────────────────────────────────────────
+async function selectAgent(key){
+  _agent=key;
+  const a=AGENTS[key];
+  document.querySelectorAll('.a-node').forEach(n=>n.classList.toggle('selected',n.dataset.agent===key));
+  document.getElementById('rpIcon').textContent=a.icon;
+  document.getElementById('rpName').textContent=a.name;
+  document.getElementById('rpRole').textContent=a.role;
+  document.getElementById('rpModel').textContent=a.model;
+  const stEl=document.getElementById('rpStatus');
+  stEl.textContent=a.status.toUpperCase();
+  stEl.className='an-status '+(a.status==='ready'?'st-ready':a.status==='standby'?'st-standby':'st-running');
+  document.getElementById('chatAgentLabel').textContent='→ '+a.name;
+  document.getElementById('chatAgentLabel').style.color=a.color;
+  // fetch Brain 1 + Brain 2
+  try{
+    const r=await fetch('/api/cu/agents'); const d=await r.json();
+    const ag=d.agents[key];
+    if(ag){
+      document.getElementById('b1-text').textContent=ag.brain1_preview;
+      const b2=ag.brain2||'';
+      document.getElementById('b2-text').textContent=b2||'(no project skills injected yet)';
+      document.getElementById('b2-edit').value=b2;
+      _brain2Cache[key]=b2;
+    }
+  }catch(e){}
 }
 
-function syncDeptSelect() {
-  const val = document.getElementById('cuDeptSel').value;
-  selectDept(document.querySelector(`[data-dept="${val}"]`));
+// ── BRAIN PILL QUICK-OPEN ─────────────────────────────────────────────────
+function openBrain(ev,key,brain){
+  ev.stopPropagation();
+  selectAgent(key);
+  switchTab(brain);
+}
+
+// ── BRAIN 2 SAVE ──────────────────────────────────────────────────────────
+async function saveBrain2(){
+  const skill=document.getElementById('b2-edit').value.trim();
+  try{
+    await fetch('/api/cu/brain2',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({agent:_agent,skill})});
+    document.getElementById('b2-text').textContent=skill||'(empty)';
+    _brain2Cache[_agent]=skill;
+    const saved=document.getElementById('b2-saved');
+    saved.style.opacity='1'; setTimeout(()=>saved.style.opacity='0',2000);
+  }catch(e){}
 }
 
 // ── TABS ──────────────────────────────────────────────────────────────────
-function switchTab(tab) {
-  _activeTab = tab;
-  ['chat','workorders','meter'].forEach(t => {
-    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
-    document.getElementById('view-' + t).style.display = t === tab ? (t === 'chat' ? 'flex' : 'block') : 'none';
+const TAB_PANELS={b1:'panel-b1',b2:'panel-b2',chat:'chat-panel',preview:'preview-panel',wo:'wo-panel',meter:'meter-panel'};
+function switchTab(tab){
+  _tab=tab;
+  Object.keys(TAB_PANELS).forEach(k=>{
+    document.getElementById('tab-'+k).classList.toggle('active',k===tab);
+    const p=document.getElementById(TAB_PANELS[k]);
+    const isFlex=(k==='chat'||k==='preview');
+    p.className=p.className.replace(' show','').replace('show','').trim();
+    if(k===tab) p.classList.add('show');
+    if(isFlex) p.style.display=(k===tab?'flex':'none');
+    else if(k!=='chat'&&k!=='preview') p.style.display=(k===tab?'block':'none');
   });
-  if (tab === 'meter') refreshMeter();
+  if(tab==='meter') refreshMeter();
+  if(tab==='b1'||tab==='b2') selectAgent(_agent);
 }
+// Fix initial display states
+Object.entries(TAB_PANELS).forEach(([k,id])=>{
+  const el=document.getElementById(id);
+  const isFlex=(k==='chat'||k==='preview');
+  if(isFlex) el.style.display='none';
+  else { el.style.display='none'; el.classList.remove('show'); }
+});
+document.getElementById('panel-b1').style.display='block';
+document.getElementById('panel-b1').classList.add('show');
 
 // ── CHAT ──────────────────────────────────────────────────────────────────
-function appendMsg(role, text) {
-  const box = document.getElementById('cu-msgs');
-  const d = document.createElement('div');
-  d.className = 'cu-msg ' + role;
-  if (role !== 'sys') {
-    const r = document.createElement('div');
-    r.className = 'msg-role';
-    r.textContent = role === 'user' ? 'YOU' : (_activeDept.toUpperCase() + ' AGENT');
+function appendMsg(role,text,agent){
+  const box=document.getElementById('cu-msgs');
+  const d=document.createElement('div'); d.className='cu-msg '+role;
+  if(role!=='sys'){
+    const r=document.createElement('div'); r.className='msg-role';
+    r.textContent=role==='user'?'YOU':(agent||_agent).toUpperCase()+' AGENT';
     d.appendChild(r);
   }
-  const t = document.createElement('div');
-  t.textContent = text;
-  d.appendChild(t);
-  box.appendChild(d);
-  box.scrollTop = box.scrollHeight;
+  const t=document.createElement('div'); t.textContent=text; d.appendChild(t);
+  box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
+async function cuSend(){
+  const inp=document.getElementById('cuInput'); const msg=inp.value.trim(); if(!msg)return;
+  inp.value=''; appendMsg('user',msg);
+  try{
+    const r=await fetch('/api/cu/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:msg,agent:_agent})});
+    const d=await r.json();
+    if(d.error){appendMsg('sys','⚠ '+d.error);return;}
+    appendMsg('agent',d.content||'(no response)',d.agent_name);
+  }catch(e){appendMsg('sys','⚠ '+e.message);}
 }
 
-async function cuSend() {
-  const inp = document.getElementById('cuChatInput');
-  const msg = inp.value.trim();
-  if (!msg) return;
-  inp.value = '';
-  appendMsg('user', msg);
-  try {
-    const r = await fetch('/api/cu/chat', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({message: msg, department: _activeDept, node_id: _selectedNode || ''})
-    });
-    const d = await r.json();
-    if (d.error) { appendMsg('sys', '⚠ ' + d.error); return; }
-    appendMsg('agent', d.content || d.error || '(no response)');
-  } catch(e) {
-    appendMsg('sys', '⚠ Network error: ' + e.message);
-  }
+// ── PREVIEW ───────────────────────────────────────────────────────────────
+function loadPreview(){
+  const url=document.getElementById('previewUrl').value.trim();
+  if(url) document.getElementById('preview-frame').src=url;
 }
+function reloadPreview(){ document.getElementById('preview-frame').src=document.getElementById('preview-frame').src; }
 
-// ── RUN LAUNCHER ─────────────────────────────────────────────────────────
-async function launchRun() {
-  const prompt = document.getElementById('runPrompt').value.trim();
-  if (!prompt) return;
-  document.getElementById('runWoCount').textContent = 'Slicing…';
-  try {
-    const r = await fetch('/api/cu/run', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({prompt, mode: document.getElementById('runMode').value})
-    });
-    const d = await r.json();
+// ── RUN LAUNCHER ──────────────────────────────────────────────────────────
+async function launchRun(){
+  const prompt=document.getElementById('runPrompt').value.trim(); if(!prompt)return;
+  document.getElementById('run-wo-label').textContent='Slicing…';
+  try{
+    const r=await fetch('/api/cu/run',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt,mode:document.getElementById('runMode').value})});
+    const d=await r.json();
     _runs.unshift(d);
-    document.getElementById('runWoCount').textContent = `${d.work_orders.length} WOs sliced`;
-    renderWorkOrders(d.work_orders);
-    renderSidebarRuns();
-    switchTab('workorders');
-    pulseNodes(d.work_orders);
-    appendMsg('sys', `Run launched: ${d.work_orders.length} work orders dispatched`);
-  } catch(e) {
-    document.getElementById('runWoCount').textContent = '⚠ error';
-    appendMsg('sys', '⚠ Launch failed: ' + e.message);
-  }
+    document.getElementById('run-wo-label').textContent=d.work_orders.length+' WOs dispatched';
+    renderWOs(d.work_orders); pulseAgents(d.work_orders);
+    switchTab('wo');
+    appendMsg('sys',`Run launched → ${d.work_orders.length} work orders`);
+  }catch(e){document.getElementById('run-wo-label').textContent='⚠ error';}
 }
-
-function renderWorkOrders(wos) {
-  const list = document.getElementById('woList');
-  list.innerHTML = '';
-  const colors = {supervisor:'var(--node-sup)',engineer:'var(--node-eng)',device:'var(--node-dev)',logistics:'var(--node-log)',vision:'var(--node-vis)',escalation:'var(--node-esc)'};
-  wos.forEach(wo => {
-    const card = document.createElement('div');
-    card.className = 'wo-card';
-    const c = colors[wo.department] || 'var(--cu)';
-    card.innerHTML = `
-      <div class="wo-head">
-        <span class="wo-id">${wo.id}</span>
-        <span class="wo-dept">${wo.department.toUpperCase()}</span>
-        <span class="wo-status-dot" style="background:${wo.status==='pending'?'var(--orange)':'var(--green)'}"></span>
-      </div>
-      <div class="wo-label" style="color:${c}">${wo.label}</div>
-      <div class="wo-spec">Status: <strong>${wo.status}</strong></div>`;
+function renderWOs(wos){
+  const list=document.getElementById('woList'); list.innerHTML='';
+  wos.forEach(wo=>{
+    const a=AGENTS[wo.agent]||{}; const c=a.color||'var(--cu)';
+    const card=document.createElement('div'); card.className='wo-card';
+    card.innerHTML=`<div class="wo-card-head">
+      <span class="wo-id">${wo.id}</span>
+      <span class="wo-agent-name" style="background:${c}22;color:${c}">${wo.agent_name||wo.agent}</span>
+      <span class="wo-status-dot" style="background:var(--orange)"></span>
+    </div>
+    <div class="wo-label">${wo.label}</div>
+    <div class="wo-meta">Status: ${wo.status}</div>`;
     list.appendChild(card);
   });
 }
-
-function renderSidebarRuns() {
-  const list = document.getElementById('sbRunList');
-  if (!_runs.length) return;
-  list.innerHTML = '';
-  _runs.slice(0,5).forEach(r => {
-    const d = document.createElement('div');
-    d.className = 'run-item';
-    d.innerHTML = `<div style="font-size:11px;color:var(--text);margin-bottom:2px">${r.prompt.slice(0,28)}…</div><span class="ri-status ${r.status}">${r.status.toUpperCase()}</span> · ${r.work_orders.length} WOs`;
-    list.appendChild(d);
-  });
-}
-
-function pulseNodes(wos) {
-  const nodeMap = {supervisor:'node-supervisor',engineer:'node-engineer',device:'node-device',logistics:'node-logistics',vision:'node-vision'};
-  wos.forEach((wo,i) => {
-    const el = document.getElementById(nodeMap[wo.department]);
-    if (!el) return;
-    setTimeout(() => {
-      const badge = el.querySelector('.rf-node-status');
-      if (badge) { badge.className = 'rf-node-status status-running'; badge.textContent = 'RUNNING'; }
-      setTimeout(() => {
-        if (badge) { badge.className = 'rf-node-status status-ready'; badge.textContent = 'READY'; }
-      }, 3000);
-    }, i * 400);
+function pulseAgents(wos){
+  wos.forEach((wo,i)=>{
+    const el=document.getElementById('node-'+wo.agent);
+    const st=document.getElementById('st-'+wo.agent);
+    if(!el||!st)return;
+    setTimeout(()=>{
+      st.className='an-status st-running'; st.textContent='RUNNING';
+      setTimeout(()=>{ st.className='an-status st-ready'; st.textContent='READY'; },3000);
+    },i*350);
   });
 }
 
 // ── METER ─────────────────────────────────────────────────────────────────
-async function refreshMeter() {
-  try {
-    const r = await fetch('/api/cu/status');
-    const d = await r.json();
-    document.getElementById('mActiveRuns').textContent = d.active_runs;
-    document.getElementById('mTotalRuns').textContent = d.total_runs;
-    document.getElementById('cuActiveRuns').textContent = `${d.active_runs} active run${d.active_runs!==1?'s':''}`;
-    const ready = Object.values(d.departments).filter(v=>v.status==='ready').length;
-    document.getElementById('mDeptsReady').textContent = `${ready} / ${Object.keys(d.departments).length}`;
-    document.getElementById('mEscalation').textContent = d.departments.escalation?.status?.toUpperCase() || '—';
-    const chip = document.getElementById('cuStatusChip');
-    chip.textContent = d.active_runs > 0 ? 'RUNNING' : 'READY';
-    chip.className = 'status-chip ' + (d.active_runs > 0 ? 'live' : '');
-    const sl = document.getElementById('deptStatusList');
-    sl.innerHTML = '';
-    Object.entries(d.departments).forEach(([k,v]) => {
-      const row = document.createElement('div');
-      row.className = 'meter-row';
-      row.innerHTML = `<span style="text-transform:capitalize">${k}</span><span class="meter-val" style="font-size:10px">${v.model}</span>`;
-      sl.appendChild(row);
+async function refreshMeter(){
+  try{
+    const r=await fetch('/api/cu/status'); const d=await r.json();
+    document.getElementById('mActive').textContent=d.active_runs;
+    document.getElementById('mTotal').textContent=d.total_runs;
+    const chip=document.getElementById('cuChip');
+    chip.textContent=d.active_runs>0?'RUNNING':'READY';
+    chip.className='chip'+(d.active_runs>0?' live':'');
+    document.getElementById('cuRunCount').textContent=d.total_runs+' run'+(d.total_runs!==1?'s':'');
+    const al=document.getElementById('mAgentList'); al.innerHTML='';
+    Object.entries(d.agents).forEach(([k,v])=>{
+      const row=document.createElement('div'); row.className='m-agent-row';
+      row.innerHTML=`<span class="m-agent-dot" style="background:${v.color}"></span>
+        <span>${v.name}</span>
+        <span class="m-agent-model">${v.model}</span>
+        <span class="an-status ${v.status==='ready'?'st-ready':'st-standby'}" style="margin-left:8px;font-size:8px">${v.status.toUpperCase()}</span>`;
+      al.appendChild(row);
     });
-  } catch(e) {}
+  }catch(e){}
 }
 
 // ── CANVAS UTILS ──────────────────────────────────────────────────────────
-const LAYOUT_DEFAULTS = {
-  'node-ingest':     {left:'40px',   top:'120px'},
-  'node-slicer':     {left:'230px',  top:'120px'},
-  'node-supervisor': {left:'460px',  top:'60px'},
-  'node-engineer':   {left:'680px',  top:'30px'},
-  'node-device':     {left:'680px',  top:'160px'},
-  'node-logistics':  {left:'680px',  top:'280px'},
-  'node-vision':     {left:'680px',  top:'390px'},
-  'node-escalation': {left:'460px',  top:'340px'},
+const DEFAULTS={
+  'node-hannibal':{left:'30px',top:'80px'},
+  'node-murdock': {left:'30px',top:'240px'},
+  'node-face':    {left:'30px',top:'400px'},
+  'node-ba':      {left:'30px',top:'540px'},
+  'node-astra':   {left:'260px',top:'340px'},
 };
-function resetLayout() {
-  Object.entries(LAYOUT_DEFAULTS).forEach(([id,pos]) => {
-    const el = document.getElementById(id);
-    if (el) { el.style.left = pos.left; el.style.top = pos.top; }
-  });
-  drawEdges();
-}
-function toggleEdgeAnim() {
-  _edgeAnimOn = !_edgeAnimOn;
-  document.getElementById('edgeAnimBtn').style.color = _edgeAnimOn ? 'var(--cu)' : 'var(--muted)';
+function resetLayout(){ Object.entries(DEFAULTS).forEach(([id,p])=>{ const e=document.getElementById(id); if(e){e.style.left=p.left;e.style.top=p.top;} }); drawEdges(); }
+function toggleAnim(){
+  _animOn=!_animOn;
+  const btn=document.getElementById('animBtn');
+  btn.classList.toggle('active',_animOn);
   drawEdges();
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded',()=>{
+  selectAgent('hannibal');
   refreshMeter();
-  setInterval(refreshMeter, 8000);
-  appendMsg('sys', 'CU Department initialized. Select a department or launch a run.');
+  setInterval(refreshMeter,8000);
   drawEdges();
+  document.getElementById('animBtn').classList.add('active');
 });
 </script>
 </body>
