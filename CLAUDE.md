@@ -18,6 +18,13 @@ These are not suggestions. The skills contain the exit criteria (mandatory check
 - Revert to any prior version: `cp design/versions/<snapshot>.css design/tokens.css && bash design/apply.sh`
 - Agent handoff doc: `design/HANDOFF.md`
 
+## GPU cost control (non-negotiable)
+
+- The GCP GPU (`berylize-node`, us-east1-c) is **manual on, manual off**. Never auto-fire it.
+- Prompt classification tops out at CAT-4. There is no automatic CAT-5.
+- CAT-4+ surfaces the Fire GPU button; it does not switch to a GPU model on its own.
+- Confirm the instance is TERMINATED when a GPU task ends: `gcloud compute instances list`
+
 ## Security (non-negotiable)
 
 - Credential values NEVER go to the browser. `/api/keys/status` returns booleans only.
@@ -30,12 +37,3 @@ These are not suggestions. The skills contain the exit criteria (mandatory check
 cd /home/hunt
 /home/hunt/.local/bin/uv run --python /home/hunt/.venv/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
-
-## EXECUTION LAW: Load crane-computer-use before any autonomous task
-
-Run /crane-computer-use before any multi-step autonomous execution, any Computer
-Use session, or any task driven by a non-technical operator. Governs the
-supervisor-worker split, 3-attempt branch rule, pre-action verification, skill
-library at ~/.crane_skills/, escalation brief format.
-
-Accountability spec: specs/computer-use-accountability.md

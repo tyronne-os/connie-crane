@@ -953,6 +953,7 @@ async def serve_ui():
         .nav-tab.depo { }
         .nav-tab.depo.active { background: rgba(245,158,11,.22); border-color: rgba(245,158,11,.4); color: #f59e0b; }
         .nav-tab.studio.active { background: rgba(16,185,129,.22); border-color: rgba(16,185,129,.4); color: #10b981; }
+        .nav-tab.cu.active { background: rgba(99,102,241,.22); border-color: rgba(99,102,241,.4); color: #818cf8; }
 
         .logo { font-weight: bold; letter-spacing: 1px; font-size: 1rem; color: #fff; }
         .badge { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; border: 1px solid var(--accent-blue); }
@@ -1077,6 +1078,7 @@ async def serve_ui():
           <a href="/connie" class="nav-tab">CONNIE</a>
           <a href="/depo" class="nav-tab depo">DEPO</a>
                   <a href="/images" class="nav-tab img">IMAGES</a>
+          <a href="/cu" class="nav-tab cu">CU DEPT</a>
         </nav>
         <div class="badge">CONNIE NOLA : VOICE FOUNDRY</div>
     </header>
@@ -3343,14 +3345,18 @@ async def save_session(req: SessionState):
 # ── CAT-5 Model Routing Protocol ──────────────────────────────────────────────
 import re as _cat_re
 
+# ── CAT-4 Model Routing Protocol ──────────────────────────────────────────────
+import re as _cat_re
+
+_CAT4_TRIGGERS = r'full feature|auth|authentication|deploy|pipeline|multi.step|architecture|system|real.time|streaming|complex'
+
 CAT5_RULES = [
     (1, _cat_re.compile(r'\b(fix typo|rename|comment|format|lint|add import|one line|single function|quick|simple change)\b', _cat_re.I)),
     (2, _cat_re.compile(r'\b(add button|add field|write test|unit test|helper function|small component|update text|change color|style)\b', _cat_re.I)),
     (3, _cat_re.compile(r'\b(build page|create endpoint|api route|database schema|refactor|module|class|integration|fetch data|crud|form)\b', _cat_re.I)),
-    (4, _cat_re.compile(r'\b(full feature|auth|authentication|deploy|pipeline|multi.step|architecture|system|real.time|streaming|complex)\b', _cat_re.I)),
-    (5, _cat_re.compile(r'\b(build (the |an |a )?(full |entire |whole |complete )?(app|application|platform|system|product)|autonomous|design pattern|microservice|scalab)\b', _cat_re.I)),
+    (4, _cat_re.compile(r'\b(' + _CAT4_TRIGGERS + r')\b', _cat_re.I)),
 ]
-CAT5_LABEL = {1:"CAT-1 FAST",2:"CAT-2 LIGHT",3:"CAT-3 CORE",4:"CAT-4 HEAVY",5:"CAT-5 TITAN"}
+CAT5_LABEL = {1:"CAT-1 FAST",2:"CAT-2 LIGHT",3:"CAT-3 CORE",4:"CAT-4 HEAVY"}
 
 class CatRequest(BaseModel):
     prompt: str
@@ -3366,7 +3372,9 @@ async def classify_cat(req: CatRequest):
     if len(txt) > 400 and cat < 3:
         cat = 3
     needs_gpu = cat >= 4
-    return {"cat": cat, "label": CAT5_LABEL[cat], "needs_gpu": needs_gpu}
+    # CAT-5 never auto-triggers. Manual GPU control only.
+    can_request_gpu = cat <= 4
+    return {"cat": cat, "label": CAT5_LABEL.get(cat, "CAT-4"), "needs_gpu": needs_gpu, "can_request_gpu": can_request_gpu}
 
 # ── Local HF model roster (Nobility Vault, no API key required) ─────────────
 LOCAL_MODEL_ROSTER = [
@@ -3382,9 +3390,6 @@ LOCAL_MODEL_ROSTER = [
     {"id": "local:qwen3-coder-30b", "name": "Qwen3 Coder 30B-A3B (GPU)", "size": "30B",
      "path": "/mnt/NOBILITY_VAULT/models/qwen3-coder-30b-gpu", "cat": 4, "runs_on": "gpu",
      "hf_repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"},
-    {"id": "local:qwen-coder-32b", "name": "Qwen2.5 Coder 32B-AWQ (GPU)", "size": "32B",
-     "path": "/mnt/NOBILITY_VAULT/models/qwen-coder-32b-gpu", "cat": 5, "runs_on": "gpu",
-     "hf_repo": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"},
 ]
 
 @app.get("/api/ide/local/status")
@@ -3622,6 +3627,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nr-btn[data-page="depo"].active{background:rgba(240,180,41,.12);color:var(--gold);}
 .nr-btn[data-page="images"].active{background:rgba(240,180,41,.08);color:var(--gold);}
 .nr-btn[data-page="bigq"].active{background:rgba(240,180,41,.08);color:var(--gold);}
+.nr-btn[data-page="cu"].active{background:rgba(99,102,241,.15);color:#818cf8;}
 .nr-tooltip{position:absolute;left:calc(100% + 8px);background:#1c2333;border:1px solid var(--border);color:var(--text);font-size:10px;font-weight:700;letter-spacing:1px;padding:3px 9px;border-radius:5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .12s;font-family:'JetBrains Mono',monospace;}
 .nr-btn:hover .nr-tooltip{opacity:1;}
 .nr-spacer{flex:1;}
@@ -3874,6 +3880,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .mg-head.diffusion{color:var(--purple);}
 .mg-head.voice{color:var(--green);}
 .mg-head.nvidia{color:var(--nvidia);}
+.mg-head.cpu{color:var(--jade);}
+.mg-head.gpu{color:var(--gold);background:var(--gold-dim);}
 .model-opt{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;transition:.12s;}
 .model-opt:hover{background:rgba(255,255,255,.05);}
 .model-opt.selected{background:rgba(240,180,41,.1);color:var(--gold);}
@@ -3990,6 +3998,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       <a href="/ide" class="top-nav-link active">Home</a>
       <a href="/studio" class="top-nav-link">Studio</a>
       <a href="/images" class="top-nav-link">Images</a>
+      <a href="/cu" class="top-nav-link">CU Dept</a>
     </nav>
   </div>
   <div class="tb-right">
@@ -4037,6 +4046,9 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     </a>
     <a href="/images" class="nr-btn" data-page="images" title="IMAGES">
       <span>🎬</span><span class="nr-tooltip">IMAGES</span>
+    </a>
+    <a href="/cu" class="nr-btn" data-page="cu" title="CU DEPT">
+      <span>⚙</span><span class="nr-tooltip">CU DEPT</span>
     </a>
     <div class="nr-divider"></div>
     <a href="/bigq" class="nr-btn" data-page="bigq" title="BIG Q">
@@ -4325,16 +4337,19 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 <script>
 // ── MODEL CATALOG ──────────────────────────────────────────────────────────
 const MODEL_CATALOG = {
-  local: [
+  // ── TOP: runs on this laptop's CPU. Free, always available, no GPU. ──
+  cpu: [
     {id:'local:deepseek-coder-1.3b', name:'DeepSeek Coder 1.3B (vault)', size:'1.3B', tag:'local', cat:1},
     {id:'local:qwen-coder-1.5b',     name:'Qwen2.5 Coder 1.5B (vault)',  size:'1.5B', tag:'local', cat:1},
     {id:'local:codegemma-2b',        name:'CodeGemma 2B (vault)',        size:'2B',   tag:'local', cat:2},
     {id:'local:qwen-coder-3b',       name:'Qwen2.5 Coder 3B (vault)',    size:'3B',   tag:'local', cat:2},
     {id:'local:starcoder2-3b',       name:'StarCoder2 3B (vault)',       size:'3B',   tag:'local', cat:2},
     {id:'local:qwen-coder-7b',       name:'Qwen2.5 Coder 7B (vault)',    size:'7B',   tag:'local', cat:3},
+  ],
+  // ── MIDDLE: needs berylize-node powered on. Costs money. Manual only. ──
+  gpu: [
     {id:'local:qwen-coder-14b',      name:'Qwen2.5 Coder 14B (GCP GPU)', size:'14B',  tag:'gpu',   cat:4},
     {id:'local:qwen3-coder-30b',     name:'Qwen3 Coder 30B-A3B (GPU)',   size:'30B',  tag:'gpu',   cat:4},
-    {id:'local:qwen-coder-32b',      name:'Qwen2.5 Coder 32B-AWQ (GPU)', size:'32B',  tag:'gpu',   cat:5},
   ],
   coding: [
     {id:'microsoft/phi-3-mini-4k-instruct',    name:'Phi-3 Mini 4K',          size:'3.8B', tag:'fast'},
@@ -4432,10 +4447,11 @@ function buildModelMenu() {
   menu.innerHTML = '';
 
   const sections = [
-    {key:'local',    label:'LOCAL VAULT — NO API KEY (CAT 1-5)', cls:'coding'},
-    {key:'coding',   label:'CODING MODELS — SMALL → LARGE', cls:'coding'},
-    {key:'diffusion',label:'DIFFUSION MODELS',               cls:'diffusion'},
-    {key:'voice',    label:'VOICE MODELS',                   cls:'voice'},
+    {key:'cpu',      label:'◆ LOCAL CPU — FREE, NO GPU NEEDED',      cls:'cpu'},
+    {key:'gpu',      label:'⚡ GPU REQUIRED — FIRE GPU FIRST ($0.40/hr)', cls:'gpu'},
+    {key:'coding',   label:'NVIDIA NIM — CODING (FREE API)',          cls:'nvidia'},
+    {key:'diffusion',label:'NVIDIA NIM — DIFFUSION (FREE API)',       cls:'diffusion'},
+    {key:'voice',    label:'NVIDIA NIM — VOICE (FREE API)',           cls:'voice'},
   ];
 
   sections.forEach(sec => {
@@ -4526,9 +4542,9 @@ function setMode(m) {
   document.getElementById('modeHint').textContent = MODE_HINTS[m];
 }
 
-// ── CAT-5 MODEL ROUTING PROTOCOL ─────────────────────────────────────────────
-const CAT5_AUTO_ROUTE = {1:'local:deepseek-coder-1.3b',2:'local:qwen-coder-3b',3:'local:qwen-coder-7b',4:'local:qwen-coder-14b',5:'local:qwen-coder-32b'};
-const CAT5_LABEL = {1:'CAT-1 FAST',2:'CAT-2 LIGHT',3:'CAT-3 CORE',4:'CAT-4 HEAVY',5:'CAT-5 TITAN'};
+// ── CAT-4 MODEL ROUTING PROTOCOL ─────────────────────────────────────────────
+const CAT5_AUTO_ROUTE = {1:'local:deepseek-coder-1.3b',2:'local:qwen-coder-3b',3:'local:qwen-coder-7b',4:'local:qwen-coder-14b'};
+const CAT5_LABEL = {1:'CAT-1 FAST',2:'CAT-2 LIGHT',3:'CAT-3 CORE',4:'CAT-4 HEAVY'};
 let _catDebounce = null;
 async function classifyPrompt(txt) {
   clearTimeout(_catDebounce);
@@ -5415,7 +5431,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   loadLocalModelStatus();
   fetchLiveModels();
   // default model: local vault model — no API key needed
-  // pinned primary coder per user request — CAT-5 auto-router will not override until user changes it
+  // pinned primary coder for this session
   selectModel('local:qwen-coder-1.5b','local','Qwen2.5 Coder 1.5B (vault)',1,false);
   // GCP status
   fetch('/api/ide/gcp/status').then(r=>r.json()).then(d=>{ if(d.configured){ document.getElementById('tbGCPBtn').className='tb-btn gcp-on'; document.getElementById('tbGCPBtn').textContent='☁ '+d.project_id; }});
@@ -5467,6 +5483,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
 .nav-tab.studio.active{background:rgba(16,185,129,.22);border-color:rgba(16,185,129,.4);color:#10b981;}
+.nav-tab.cu.active{background:rgba(99,102,241,.22);border-color:rgba(99,102,241,.4);color:#818cf8;}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -5524,6 +5541,7 @@ input[type=range]{flex:1;accent-color:var(--purple);}
     <a href="/connie" class="nav-tab active">CONNIE</a>
     <a href="/depo" class="nav-tab depo">DEPO</a>
       <a href="/images" class="nav-tab img">IMAGES</a>
+    <a href="/cu" class="nav-tab cu">CU DEPT</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -5755,6 +5773,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
 .nav-tab.depo.active{background:rgba(245,158,11,.22);border-color:rgba(245,158,11,.4);color:var(--gold);}
 .nav-tab.img.active{background:rgba(56,189,248,.22);border-color:rgba(56,189,248,.4);color:var(--blue);}
 .nav-tab.studio.active{background:rgba(16,185,129,.22);border-color:rgba(16,185,129,.4);color:#10b981;}
+.nav-tab.cu.active{background:rgba(99,102,241,.22);border-color:rgba(99,102,241,.4);color:#818cf8;}
 .tb-spacer{flex:1;}
 .tb-btn{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;}
 .tb-btn:hover{border-color:var(--blue);color:var(--blue);}
@@ -5835,6 +5854,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
     <a href="/connie" class="nav-tab">CONNIE</a>
     <a href="/depo" class="nav-tab depo active">DEPO</a>
       <a href="/images" class="nav-tab img">IMAGES</a>
+    <a href="/cu" class="nav-tab cu">CU DEPT</a>
   </nav>
   <div class="tb-spacer"></div>
   <button class="tb-btn" onclick="window.location='/ide'">💻 IDE</button>
@@ -6318,6 +6338,10 @@ def _meter_load():
             pass
     return {"running": False, "started_at": None, "last_activity": None,
             "rate": GPU_DEFAULT_RATE, "total_cost": 0.0, "total_seconds": 0.0,
+            # auto_off stays True as a cost backstop: the GPU never STARTS on its
+            # own (CAT-5 parked, no auto-fire), but if a session is forgotten the
+            # 10-min idle watchdog shuts the instance down. Manual start, manual
+            # stop, automatic rescue.
             "sessions": [], "auto_off": True, "idle_timeout": GPU_IDLE_TIMEOUT_S}
 
 
@@ -7038,7 +7062,7 @@ function setMode(m){
   document.getElementById('heroSub').textContent=m==='image'
     ? 'FLUX and Qwen-Image, straight out of your Nobility Vault.'
     : 'Length is auto-set to each model’s native maximum. Chain segments to go past it.';
-  // CAT-5 GPU protocol: images always use free ZeroGPU; videos require paid GCP GPU
+  // Images always use free ZeroGPU; videos require paid GCP GPU if needed
   if(m==='image'){ setProvider('zerogpu'); document.getElementById('pGcp').style.opacity='.35'; document.getElementById('pGcp').title='Images always use free ZeroGPU — GPU ($0.40/hr) reserved for video rendering'; }
   else { setProvider('gcp'); document.getElementById('pGcp').style.opacity='1'; document.getElementById('pGcp').title=''; }
   document.getElementById('promptBox').placeholder=m==='image'?'Type to imagine…':'Describe the shot…';
@@ -7282,5 +7306,765 @@ window.addEventListener('DOMContentLoaded',()=>{
 </body>
 </html>
 """
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+
+# ── CRANE-CU API stubs ────────────────────────────────────────────────────────
+
+from pydantic import BaseModel as _BM
+
+class CURunRequest(_BM):
+    prompt: str
+    department: str = "supervisor"
+    mode: str = "auto"  # auto | plan | superman
+
+class CUChatRequest(_BM):
+    message: str
+    node_id: str = ""
+    department: str = "supervisor"
+
+_cu_run_log: list = []
+
+@app.post("/api/cu/run")
+async def cu_run(req: CURunRequest):
+    import time as _t
+    entry = {
+        "id": f"run_{int(_t.time()*1000)}",
+        "prompt": req.prompt,
+        "department": req.department,
+        "mode": req.mode,
+        "status": "queued",
+        "work_orders": [],
+        "ts": _t.time(),
+    }
+    # Slice into 2-5 atomic work orders via CAT classification
+    cat_resp = await classify_cat(CatRequest(prompt=req.prompt))
+    cat = cat_resp["cat"]
+    n_orders = min(max(cat, 2), 5)
+    for i in range(n_orders):
+        entry["work_orders"].append({
+            "id": f"WO-{i+1:02d}",
+            "label": f"Work Order {i+1}",
+            "status": "pending",
+            "department": ["supervisor","engineer","device","logistics","vision"][i % 5],
+        })
+    entry["status"] = "running"
+    _cu_run_log.append(entry)
+    return entry
+
+@app.get("/api/cu/runs")
+async def cu_runs():
+    return {"runs": _cu_run_log[-20:]}
+
+@app.post("/api/cu/chat")
+async def cu_chat(req: CUChatRequest):
+    # Route to local model via existing local_chat infrastructure
+    model_map = {
+        "supervisor":  "local:qwen-coder-3b",
+        "engineer":    "local:qwen-coder-14b",
+        "device":      "local:qwen-coder-7b",
+        "logistics":   "local:qwen-coder-3b",
+        "vision":      "local:qwen-coder-7b",
+        "escalation":  "local:qwen3-coder-30b",
+    }
+    model_id = model_map.get(req.department, "local:qwen-coder-3b")
+    system = (
+        f"You are the {req.department.upper()} agent in CRANE-CU. "
+        f"You are part of a multi-agent engineering department. "
+        f"Node context: {req.node_id or 'none'}. "
+        "Be concise, technical, and actionable."
+    )
+    result = await local_chat(LocalChatRequest(
+        model=model_id,
+        messages=[{"role": "user", "content": req.message}],
+        system=system,
+        max_tokens=1024,
+    ))
+    return result
+
+@app.get("/api/cu/status")
+async def cu_status():
+    return {
+        "departments": {
+            "supervisor":  {"model": "Qwen2.5-Coder-3B",  "status": "ready", "cat": 2},
+            "engineer":    {"model": "Qwen2.5-Coder-14B", "status": "ready", "cat": 4},
+            "device":      {"model": "Qwen2.5-Coder-7B",  "status": "ready", "cat": 3},
+            "logistics":   {"model": "Qwen2.5-Coder-3B",  "status": "ready", "cat": 2},
+            "vision":      {"model": "Qwen2.5-Coder-7B",  "status": "ready", "cat": 3},
+            "escalation":  {"model": "Gemini-3.8 / Qwen3-30B", "status": "standby", "cat": 4},
+        },
+        "active_runs": len([r for r in _cu_run_log if r.get("status") == "running"]),
+        "total_runs": len(_cu_run_log),
+    }
+
+
+# ── /cu page ──────────────────────────────────────────────────────────────────
+
+@app.get("/cu", response_class=HTMLResponse)
+async def serve_cu():
+    return HTMLResponse(content=r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CRANE — CU Department</title>
+<style>
+:root{
+  --bg:#0d0d10;--panel:#16151a;--card:#1c1b22;--border:#2a2433;
+  --text:#eef2f3;--muted:#8a9296;--gold:#f0b429;--gold-dim:rgba(240,180,41,.12);
+  --cu:#818cf8;--cu-dim:rgba(129,140,248,.12);--cu-border:rgba(129,140,248,.3);
+  --green:#2ee6b8;--red:#ef4444;--orange:#f59e0b;--blue:#38bdf8;
+  --node-sup:#f0b429;--node-eng:#38bdf8;--node-dev:#2ee6b8;
+  --node-log:#a78bfa;--node-vis:#f59e0b;--node-esc:#ef4444;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* ── TOPBAR ── */
+#topbar{height:48px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:16px;flex-shrink:0;}
+.tb-brand{font-weight:800;font-size:15px;letter-spacing:2px;color:var(--cu);}
+.tb-sep{width:1px;height:20px;background:var(--border);}
+.top-nav{display:flex;gap:2px;}
+.top-nav a{color:var(--muted);text-decoration:none;padding:0 12px;height:36px;display:flex;align-items:center;font-size:12px;font-weight:500;border-radius:6px;transition:.15s;letter-spacing:.3px;}
+.top-nav a:hover{color:var(--text);background:rgba(255,255,255,.05);}
+.top-nav a.active{color:var(--cu);background:var(--cu-dim);}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.status-chip{font-size:10px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;border-radius:4px;border:1px solid var(--cu-border);color:var(--cu);background:var(--cu-dim);}
+.status-chip.live{color:var(--green);border-color:rgba(46,230,184,.3);background:rgba(46,230,184,.08);}
+
+/* ── LAYOUT ── */
+#layout{display:flex;flex:1;overflow:hidden;}
+
+/* ── LEFT SIDEBAR ── */
+#sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.sb-head{padding:12px 14px 8px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);}
+.dept-btn{display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--text);font-size:12px;width:100%;text-align:left;transition:.15s;border-left:2px solid transparent;}
+.dept-btn:hover{background:rgba(255,255,255,.04);}
+.dept-btn.active{background:var(--cu-dim);border-left-color:var(--cu);color:var(--cu);}
+.dept-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.dept-model{font-size:9px;color:var(--muted);margin-left:auto;}
+.sb-divider{height:1px;background:var(--border);margin:8px 0;}
+.sb-section{padding:8px 14px 4px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);}
+.run-item{padding:6px 14px;font-size:11px;color:var(--muted);cursor:pointer;transition:.15s;border-left:2px solid transparent;}
+.run-item:hover{color:var(--text);background:rgba(255,255,255,.03);}
+.run-item .ri-status{font-size:9px;font-weight:700;letter-spacing:1px;}
+.ri-status.running{color:var(--green);}
+.ri-status.queued{color:var(--orange);}
+.ri-status.done{color:var(--muted);}
+
+/* ── CANVAS ── */
+#canvas-wrap{flex:1;position:relative;overflow:hidden;background:var(--bg);}
+#rf-canvas{width:100%;height:100%;}
+.grid-bg{
+  position:absolute;inset:0;
+  background-image:radial-gradient(circle,rgba(129,140,248,.12) 1px,transparent 1px);
+  background-size:28px 28px;
+  pointer-events:none;
+}
+/* React Flow node styles */
+.rf-node{position:absolute;border-radius:10px;border:1.5px solid;padding:12px 16px;min-width:160px;cursor:pointer;transition:.2s;user-select:none;font-family:'Inter',sans-serif;}
+.rf-node:hover{filter:brightness(1.15);transform:translateY(-1px);}
+.rf-node.selected{box-shadow:0 0 0 2px var(--cu),0 8px 24px rgba(0,0,0,.6);}
+.rf-node-head{font-size:9px;font-weight:700;letter-spacing:2px;margin-bottom:6px;opacity:.7;}
+.rf-node-title{font-size:13px;font-weight:700;margin-bottom:4px;}
+.rf-node-model{font-size:10px;opacity:.6;}
+.rf-node-status{font-size:9px;font-weight:700;letter-spacing:1px;margin-top:8px;padding:2px 6px;border-radius:3px;display:inline-block;}
+.status-ready{background:rgba(46,230,184,.15);color:#2ee6b8;}
+.status-standby{background:rgba(245,158,11,.15);color:#f59e0b;}
+.status-running{background:rgba(99,102,241,.2);color:#818cf8;}
+.status-error{background:rgba(239,68,68,.15);color:#ef4444;}
+/* node colors */
+.node-sup{background:rgba(240,180,41,.08);border-color:rgba(240,180,41,.35);color:var(--node-sup);}
+.node-eng{background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.35);color:var(--node-eng);}
+.node-dev{background:rgba(46,230,184,.08);border-color:rgba(46,230,184,.35);color:var(--node-dev);}
+.node-log{background:rgba(167,139,250,.08);border-color:rgba(167,139,250,.35);color:var(--node-log);}
+.node-vis{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.35);color:var(--node-vis);}
+.node-esc{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35);color:var(--node-esc);}
+.node-ingest{background:rgba(129,140,248,.08);border-color:var(--cu-border);color:var(--cu);}
+.node-slicer{background:rgba(129,140,248,.05);border-color:rgba(129,140,248,.2);color:var(--muted);}
+/* SVG edges */
+#edge-svg{position:absolute;inset:0;pointer-events:none;overflow:visible;}
+.edge{stroke-width:1.5;fill:none;opacity:.5;}
+.edge-animated{stroke-dasharray:6 4;animation:dash 1.2s linear infinite;}
+@keyframes dash{to{stroke-dashoffset:-20;}}
+/* canvas controls */
+.canvas-controls{position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;}
+.cc-btn{width:32px;height:32px;background:var(--panel);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:.15s;color:var(--muted);}
+.cc-btn:hover{color:var(--text);border-color:var(--cu);}
+.canvas-legend{position:absolute;bottom:16px;left:16px;background:rgba(22,21,26,.9);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:10px;}
+.legend-row{display:flex;align-items:center;gap:8px;padding:2px 0;color:var(--muted);}
+.legend-dot{width:8px;height:8px;border-radius:50%;}
+
+/* ── RIGHT PANEL ── */
+#right-panel{width:340px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.rp-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
+.rp-title{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--cu);}
+.rp-dept-badge{font-size:9px;font-weight:700;letter-spacing:1.5px;padding:2px 7px;border-radius:3px;background:var(--cu-dim);border:1px solid var(--cu-border);color:var(--cu);}
+.rp-tabs{display:flex;border-bottom:1px solid var(--border);}
+.rp-tab{flex:1;padding:8px;font-size:10px;font-weight:700;letter-spacing:1px;text-align:center;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:.15s;}
+.rp-tab.active{color:var(--cu);border-bottom-color:var(--cu);}
+.rp-body{flex:1;overflow-y:auto;padding:12px;}
+.rp-body::-webkit-scrollbar{width:4px;}
+.rp-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* work order cards */
+.wo-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
+.wo-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.wo-id{font-size:9px;font-weight:700;letter-spacing:1.5px;color:var(--cu);font-family:'JetBrains Mono',monospace;}
+.wo-dept{font-size:9px;color:var(--muted);}
+.wo-status-dot{width:6px;height:6px;border-radius:50%;margin-left:auto;}
+.wo-label{font-size:12px;font-weight:600;margin-bottom:4px;}
+.wo-spec{font-size:10px;color:var(--muted);line-height:1.5;}
+
+/* meter */
+.meter-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;}
+.meter-row:last-child{border:none;}
+.meter-val{font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--cu);}
+.meter-bar-wrap{height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:8px;}
+.meter-bar{height:4px;background:var(--cu);border-radius:2px;transition:.5s;}
+
+/* chat */
+#cu-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:0;}
+#cu-msgs::-webkit-scrollbar{width:4px;}
+#cu-msgs::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.cu-msg{padding:8px 10px;border-radius:7px;font-size:12px;line-height:1.55;max-width:95%;}
+.cu-msg.user{background:var(--cu-dim);border:1px solid var(--cu-border);align-self:flex-end;}
+.cu-msg.agent{background:var(--card);border:1px solid var(--border);align-self:flex-start;}
+.cu-msg.sys{background:rgba(240,180,41,.06);border:1px solid rgba(240,180,41,.15);color:var(--muted);font-size:10px;font-style:italic;align-self:center;}
+.cu-msg .msg-role{font-size:9px;font-weight:700;letter-spacing:1.5px;margin-bottom:4px;opacity:.6;}
+.cu-composer{border-top:1px solid var(--border);padding:10px;}
+.cu-composer textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;padding:8px 10px;resize:none;outline:none;min-height:60px;transition:.15s;}
+.cu-composer textarea:focus{border-color:var(--cu);}
+.cu-composer-bar{display:flex;align-items:center;gap:8px;margin-top:6px;}
+.cu-send-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s;margin-left:auto;}
+.cu-send-btn:hover{background:#6366f1;}
+.cu-dept-sel{background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;padding:4px 8px;outline:none;}
+
+/* run launcher */
+.run-launcher{padding:12px;border-bottom:1px solid var(--border);}
+.run-launcher textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;resize:none;min-height:52px;outline:none;font-family:'Inter',sans-serif;}
+.run-launcher textarea:focus{border-color:var(--cu);}
+.run-launch-bar{display:flex;gap:8px;margin-top:6px;align-items:center;}
+.run-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 18px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s;}
+.run-btn:hover{background:#6366f1;}
+.run-mode-sel{background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;padding:4px 8px;outline:none;}
+.run-label{font-size:9px;color:var(--muted);margin-left:auto;}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div id="topbar">
+  <span class="tb-brand">⚙ CU DEPT</span>
+  <div class="tb-sep"></div>
+  <nav class="top-nav">
+    <a href="/ide">Home</a>
+    <a href="/studio">Studio</a>
+    <a href="/images">Images</a>
+    <a href="/cu" class="active">CU Dept</a>
+  </nav>
+  <div class="tb-right">
+    <span class="status-chip" id="cuStatusChip">INITIALIZING</span>
+    <span style="font-size:10px;color:var(--muted)" id="cuActiveRuns">0 active runs</span>
+  </div>
+</div>
+
+<!-- LAYOUT -->
+<div id="layout">
+
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="sb-head">DEPARTMENTS</div>
+
+    <button class="dept-btn active" data-dept="supervisor" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-sup)"></span>
+      <span>Supervisor</span>
+      <span class="dept-model">3B</span>
+    </button>
+    <button class="dept-btn" data-dept="engineer" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-eng)"></span>
+      <span>Engineer</span>
+      <span class="dept-model">14B</span>
+    </button>
+    <button class="dept-btn" data-dept="device" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-dev)"></span>
+      <span>Device Mgmt</span>
+      <span class="dept-model">7B</span>
+    </button>
+    <button class="dept-btn" data-dept="logistics" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-log)"></span>
+      <span>Logistics</span>
+      <span class="dept-model">3B</span>
+    </button>
+    <button class="dept-btn" data-dept="vision" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-vis)"></span>
+      <span>Vision & UI</span>
+      <span class="dept-model">7B</span>
+    </button>
+
+    <div class="sb-divider"></div>
+
+    <button class="dept-btn" data-dept="escalation" onclick="selectDept(this)">
+      <span class="dept-dot" style="background:var(--node-esc)"></span>
+      <span>Escalation</span>
+      <span class="dept-model">30B+</span>
+    </button>
+
+    <div class="sb-divider"></div>
+    <div class="sb-section">RECENT RUNS</div>
+    <div id="sbRunList">
+      <div style="padding:8px 14px;font-size:10px;color:var(--muted)">No runs yet</div>
+    </div>
+  </div>
+
+  <!-- CANVAS -->
+  <div id="canvas-wrap">
+    <div class="grid-bg"></div>
+
+    <svg id="edge-svg">
+      <!-- edges drawn by JS -->
+    </svg>
+
+    <!-- NODES — positioned absolutely -->
+    <!-- Ingestion -->
+    <div class="rf-node node-ingest" id="node-ingest" style="left:40px;top:120px;min-width:140px" onclick="selectNode('ingest')">
+      <div class="rf-node-head">INPUT</div>
+      <div class="rf-node-title">Ingestion</div>
+      <div class="rf-node-model">Voice / Prompt</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Work-Order Slicer -->
+    <div class="rf-node node-slicer" id="node-slicer" style="left:230px;top:120px" onclick="selectNode('slicer')">
+      <div class="rf-node-head">ORCHESTRATION</div>
+      <div class="rf-node-title">Work-Order Slicer</div>
+      <div class="rf-node-model">2–5 Atomic WOs</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Supervisor -->
+    <div class="rf-node node-sup" id="node-supervisor" style="left:460px;top:60px" onclick="selectNode('supervisor')">
+      <div class="rf-node-head">SUPERVISOR</div>
+      <div class="rf-node-title">Dispatcher</div>
+      <div class="rf-node-model">Qwen2.5-Coder-3B</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Engineer -->
+    <div class="rf-node node-eng" id="node-engineer" style="left:680px;top:30px" onclick="selectNode('engineer')">
+      <div class="rf-node-head">DEPT · ENGINEER</div>
+      <div class="rf-node-title">Code & IDE</div>
+      <div class="rf-node-model">Qwen2.5-Coder-14B</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Device -->
+    <div class="rf-node node-dev" id="node-device" style="left:680px;top:160px" onclick="selectNode('device')">
+      <div class="rf-node-head">DEPT · DEVICE</div>
+      <div class="rf-node-title">Device Mgmt</div>
+      <div class="rf-node-model">Qwen2.5-Coder-7B</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Logistics -->
+    <div class="rf-node node-log" id="node-logistics" style="left:680px;top:280px" onclick="selectNode('logistics')">
+      <div class="rf-node-head">DEPT · LOGISTICS</div>
+      <div class="rf-node-title">Vault / GitHub / HF</div>
+      <div class="rf-node-model">Qwen2.5-Coder-3B</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Vision -->
+    <div class="rf-node node-vis" id="node-vision" style="left:680px;top:390px" onclick="selectNode('vision')">
+      <div class="rf-node-head">DEPT · VISION</div>
+      <div class="rf-node-title">Vision & UI Render</div>
+      <div class="rf-node-model">Qwen2.5-Coder-7B</div>
+      <span class="rf-node-status status-ready">READY</span>
+    </div>
+
+    <!-- Escalation Bridge -->
+    <div class="rf-node node-esc" id="node-escalation" style="left:460px;top:340px" onclick="selectNode('escalation')">
+      <div class="rf-node-head">ESCALATION BRIDGE</div>
+      <div class="rf-node-title">Gemini / Qwen3-30B</div>
+      <div class="rf-node-model">3-error threshold</div>
+      <span class="rf-node-status status-standby">STANDBY</span>
+    </div>
+
+    <!-- Canvas controls -->
+    <div class="canvas-controls">
+      <div class="cc-btn" onclick="resetLayout()" title="Reset layout">⊞</div>
+      <div class="cc-btn" onclick="toggleEdgeAnim()" title="Toggle animation" id="edgeAnimBtn">◎</div>
+    </div>
+
+    <!-- Legend -->
+    <div class="canvas-legend">
+      <div class="legend-row"><div class="legend-dot" style="background:var(--cu)"></div>Orchestration</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-sup)"></div>Supervisor</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-eng)"></div>Engineer</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-dev)"></div>Device</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-log)"></div>Logistics</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-vis)"></div>Vision</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-esc)"></div>Escalation</div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div id="right-panel">
+
+    <!-- Run launcher -->
+    <div class="run-launcher">
+      <textarea id="runPrompt" placeholder="Describe what you want built… (voice or text)&#10;e.g. Build a login page with email + password auth"></textarea>
+      <div class="run-launch-bar">
+        <select class="run-mode-sel" id="runMode">
+          <option value="plan">Plan</option>
+          <option value="auto" selected>Auto</option>
+          <option value="superman">Superman</option>
+        </select>
+        <button class="run-btn" onclick="launchRun()">▶ Launch Run</button>
+        <span class="run-label" id="runWoCount">—</span>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="rp-tabs">
+      <div class="rp-tab active" id="tab-chat" onclick="switchTab('chat')">CHAT</div>
+      <div class="rp-tab" id="tab-workorders" onclick="switchTab('workorders')">WORK ORDERS</div>
+      <div class="rp-tab" id="tab-meter" onclick="switchTab('meter')">METER</div>
+    </div>
+
+    <!-- Panel header -->
+    <div class="rp-head">
+      <span class="rp-title" id="rpTitle">SUPERVISOR</span>
+      <span class="rp-dept-badge" id="rpBadge">DISPATCHER</span>
+    </div>
+
+    <!-- Chat view -->
+    <div id="view-chat" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+      <div id="cu-msgs"></div>
+      <div class="cu-composer">
+        <textarea id="cuChatInput" placeholder="Ask this department agent…" rows="2"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();cuSend();}"></textarea>
+        <div class="cu-composer-bar">
+          <select class="cu-dept-sel" id="cuDeptSel" onchange="syncDeptSelect()">
+            <option value="supervisor">Supervisor</option>
+            <option value="engineer">Engineer</option>
+            <option value="device">Device Mgmt</option>
+            <option value="logistics">Logistics</option>
+            <option value="vision">Vision & UI</option>
+            <option value="escalation">Escalation</option>
+          </select>
+          <button class="cu-send-btn" onclick="cuSend()">Send ▸</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Work orders view -->
+    <div id="view-workorders" style="display:none;flex:1;overflow-y:auto;padding:12px;">
+      <div id="woList">
+        <div style="color:var(--muted);font-size:11px;text-align:center;padding:32px 0">No active run.<br>Launch a run above to see work orders.</div>
+      </div>
+    </div>
+
+    <!-- Meter view -->
+    <div id="view-meter" style="display:none;flex:1;overflow-y:auto;padding:12px;">
+      <div id="meterView">
+        <div class="meter-row"><span>Active Runs</span><span class="meter-val" id="mActiveRuns">0</span></div>
+        <div class="meter-row"><span>Total Runs</span><span class="meter-val" id="mTotalRuns">0</span></div>
+        <div class="meter-row"><span>Departments Ready</span><span class="meter-val" id="mDeptsReady">—</span></div>
+        <div class="meter-row"><span>Escalation</span><span class="meter-val" id="mEscalation">STANDBY</span></div>
+        <div style="margin-top:12px;font-size:9px;color:var(--muted);letter-spacing:1px">DEPARTMENT STATUS</div>
+        <div id="deptStatusList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── STATE ─────────────────────────────────────────────────────────────────
+let _activeDept = 'supervisor';
+let _activeTab = 'chat';
+let _selectedNode = null;
+let _edgeAnimOn = true;
+let _runs = [];
+
+const DEPT_META = {
+  supervisor: {label:'SUPERVISOR', badge:'DISPATCHER', color:'var(--node-sup)'},
+  engineer:   {label:'ENGINEER',   badge:'CODE & IDE',  color:'var(--node-eng)'},
+  device:     {label:'DEVICE',     badge:'DEVICE MGMT', color:'var(--node-dev)'},
+  logistics:  {label:'LOGISTICS',  badge:'VAULT/GH/HF', color:'var(--node-log)'},
+  vision:     {label:'VISION',     badge:'UI RENDER',   color:'var(--node-vis)'},
+  escalation: {label:'ESCALATION', badge:'BRIDGE',      color:'var(--node-esc)'},
+};
+
+// ── EDGES (SVG) ───────────────────────────────────────────────────────────
+const EDGES = [
+  {from:'node-ingest',    to:'node-slicer',     color:'rgba(129,140,248,.5)'},
+  {from:'node-slicer',    to:'node-supervisor', color:'rgba(240,180,41,.5)'},
+  {from:'node-supervisor',to:'node-engineer',   color:'rgba(56,189,248,.5)'},
+  {from:'node-supervisor',to:'node-device',     color:'rgba(46,230,184,.5)'},
+  {from:'node-supervisor',to:'node-logistics',  color:'rgba(167,139,250,.5)'},
+  {from:'node-supervisor',to:'node-vision',     color:'rgba(245,158,11,.5)'},
+  {from:'node-supervisor',to:'node-escalation', color:'rgba(239,68,68,.4)', dashed:true},
+  {from:'node-escalation',to:'node-supervisor', color:'rgba(239,68,68,.3)', dashed:true},
+];
+
+function nodeCenter(id) {
+  const el = document.getElementById(id);
+  if (!el) return {x:0,y:0};
+  return {
+    x: el.offsetLeft + el.offsetWidth / 2,
+    y: el.offsetTop + el.offsetHeight / 2,
+  };
+}
+
+function drawEdges() {
+  const svg = document.getElementById('edge-svg');
+  svg.innerHTML = '';
+  EDGES.forEach(e => {
+    const a = nodeCenter(e.from), b = nodeCenter(e.to);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const mx = a.x + dx * 0.5, my = a.y;
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', `M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`);
+    path.setAttribute('stroke', e.color);
+    path.classList.add('edge');
+    if (e.dashed && _edgeAnimOn) path.classList.add('edge-animated');
+    svg.appendChild(path);
+  });
+}
+
+window.addEventListener('resize', drawEdges);
+setTimeout(drawEdges, 100);
+
+// ── NODE DRAG ─────────────────────────────────────────────────────────────
+function makeDraggable(el) {
+  let ox, oy, startL, startT, dragging = false;
+  el.addEventListener('mousedown', e => {
+    if (e.target.tagName === 'BUTTON') return;
+    dragging = true;
+    ox = e.clientX; oy = e.clientY;
+    startL = el.offsetLeft; startT = el.offsetTop;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    el.style.left = (startL + e.clientX - ox) + 'px';
+    el.style.top  = (startT + e.clientY - oy) + 'px';
+    drawEdges();
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+}
+document.querySelectorAll('.rf-node').forEach(makeDraggable);
+
+// ── NODE SELECT ───────────────────────────────────────────────────────────
+function selectNode(id) {
+  document.querySelectorAll('.rf-node').forEach(n => n.classList.remove('selected'));
+  const el = document.getElementById('node-' + id);
+  if (el) el.classList.add('selected');
+  _selectedNode = id;
+  if (DEPT_META[id]) {
+    selectDept(document.querySelector(`[data-dept="${id}"]`));
+  }
+}
+
+// ── DEPT SELECT ───────────────────────────────────────────────────────────
+function selectDept(btn) {
+  if (!btn) return;
+  document.querySelectorAll('.dept-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _activeDept = btn.dataset.dept;
+  const meta = DEPT_META[_activeDept] || {};
+  document.getElementById('rpTitle').textContent = meta.label || _activeDept.toUpperCase();
+  document.getElementById('rpBadge').textContent = meta.badge || '';
+  document.getElementById('rpBadge').style.borderColor = meta.color || 'var(--cu-border)';
+  document.getElementById('rpBadge').style.color = meta.color || 'var(--cu)';
+  document.getElementById('cuDeptSel').value = _activeDept;
+  appendMsg('sys', `Switched to ${meta.label || _activeDept} department`);
+}
+
+function syncDeptSelect() {
+  const val = document.getElementById('cuDeptSel').value;
+  selectDept(document.querySelector(`[data-dept="${val}"]`));
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  _activeTab = tab;
+  ['chat','workorders','meter'].forEach(t => {
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+    document.getElementById('view-' + t).style.display = t === tab ? (t === 'chat' ? 'flex' : 'block') : 'none';
+  });
+  if (tab === 'meter') refreshMeter();
+}
+
+// ── CHAT ──────────────────────────────────────────────────────────────────
+function appendMsg(role, text) {
+  const box = document.getElementById('cu-msgs');
+  const d = document.createElement('div');
+  d.className = 'cu-msg ' + role;
+  if (role !== 'sys') {
+    const r = document.createElement('div');
+    r.className = 'msg-role';
+    r.textContent = role === 'user' ? 'YOU' : (_activeDept.toUpperCase() + ' AGENT');
+    d.appendChild(r);
+  }
+  const t = document.createElement('div');
+  t.textContent = text;
+  d.appendChild(t);
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function cuSend() {
+  const inp = document.getElementById('cuChatInput');
+  const msg = inp.value.trim();
+  if (!msg) return;
+  inp.value = '';
+  appendMsg('user', msg);
+  try {
+    const r = await fetch('/api/cu/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({message: msg, department: _activeDept, node_id: _selectedNode || ''})
+    });
+    const d = await r.json();
+    if (d.error) { appendMsg('sys', '⚠ ' + d.error); return; }
+    appendMsg('agent', d.content || d.error || '(no response)');
+  } catch(e) {
+    appendMsg('sys', '⚠ Network error: ' + e.message);
+  }
+}
+
+// ── RUN LAUNCHER ─────────────────────────────────────────────────────────
+async function launchRun() {
+  const prompt = document.getElementById('runPrompt').value.trim();
+  if (!prompt) return;
+  document.getElementById('runWoCount').textContent = 'Slicing…';
+  try {
+    const r = await fetch('/api/cu/run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt, mode: document.getElementById('runMode').value})
+    });
+    const d = await r.json();
+    _runs.unshift(d);
+    document.getElementById('runWoCount').textContent = `${d.work_orders.length} WOs sliced`;
+    renderWorkOrders(d.work_orders);
+    renderSidebarRuns();
+    switchTab('workorders');
+    pulseNodes(d.work_orders);
+    appendMsg('sys', `Run launched: ${d.work_orders.length} work orders dispatched`);
+  } catch(e) {
+    document.getElementById('runWoCount').textContent = '⚠ error';
+    appendMsg('sys', '⚠ Launch failed: ' + e.message);
+  }
+}
+
+function renderWorkOrders(wos) {
+  const list = document.getElementById('woList');
+  list.innerHTML = '';
+  const colors = {supervisor:'var(--node-sup)',engineer:'var(--node-eng)',device:'var(--node-dev)',logistics:'var(--node-log)',vision:'var(--node-vis)',escalation:'var(--node-esc)'};
+  wos.forEach(wo => {
+    const card = document.createElement('div');
+    card.className = 'wo-card';
+    const c = colors[wo.department] || 'var(--cu)';
+    card.innerHTML = `
+      <div class="wo-head">
+        <span class="wo-id">${wo.id}</span>
+        <span class="wo-dept">${wo.department.toUpperCase()}</span>
+        <span class="wo-status-dot" style="background:${wo.status==='pending'?'var(--orange)':'var(--green)'}"></span>
+      </div>
+      <div class="wo-label" style="color:${c}">${wo.label}</div>
+      <div class="wo-spec">Status: <strong>${wo.status}</strong></div>`;
+    list.appendChild(card);
+  });
+}
+
+function renderSidebarRuns() {
+  const list = document.getElementById('sbRunList');
+  if (!_runs.length) return;
+  list.innerHTML = '';
+  _runs.slice(0,5).forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'run-item';
+    d.innerHTML = `<div style="font-size:11px;color:var(--text);margin-bottom:2px">${r.prompt.slice(0,28)}…</div><span class="ri-status ${r.status}">${r.status.toUpperCase()}</span> · ${r.work_orders.length} WOs`;
+    list.appendChild(d);
+  });
+}
+
+function pulseNodes(wos) {
+  const nodeMap = {supervisor:'node-supervisor',engineer:'node-engineer',device:'node-device',logistics:'node-logistics',vision:'node-vision'};
+  wos.forEach((wo,i) => {
+    const el = document.getElementById(nodeMap[wo.department]);
+    if (!el) return;
+    setTimeout(() => {
+      const badge = el.querySelector('.rf-node-status');
+      if (badge) { badge.className = 'rf-node-status status-running'; badge.textContent = 'RUNNING'; }
+      setTimeout(() => {
+        if (badge) { badge.className = 'rf-node-status status-ready'; badge.textContent = 'READY'; }
+      }, 3000);
+    }, i * 400);
+  });
+}
+
+// ── METER ─────────────────────────────────────────────────────────────────
+async function refreshMeter() {
+  try {
+    const r = await fetch('/api/cu/status');
+    const d = await r.json();
+    document.getElementById('mActiveRuns').textContent = d.active_runs;
+    document.getElementById('mTotalRuns').textContent = d.total_runs;
+    document.getElementById('cuActiveRuns').textContent = `${d.active_runs} active run${d.active_runs!==1?'s':''}`;
+    const ready = Object.values(d.departments).filter(v=>v.status==='ready').length;
+    document.getElementById('mDeptsReady').textContent = `${ready} / ${Object.keys(d.departments).length}`;
+    document.getElementById('mEscalation').textContent = d.departments.escalation?.status?.toUpperCase() || '—';
+    const chip = document.getElementById('cuStatusChip');
+    chip.textContent = d.active_runs > 0 ? 'RUNNING' : 'READY';
+    chip.className = 'status-chip ' + (d.active_runs > 0 ? 'live' : '');
+    const sl = document.getElementById('deptStatusList');
+    sl.innerHTML = '';
+    Object.entries(d.departments).forEach(([k,v]) => {
+      const row = document.createElement('div');
+      row.className = 'meter-row';
+      row.innerHTML = `<span style="text-transform:capitalize">${k}</span><span class="meter-val" style="font-size:10px">${v.model}</span>`;
+      sl.appendChild(row);
+    });
+  } catch(e) {}
+}
+
+// ── CANVAS UTILS ──────────────────────────────────────────────────────────
+const LAYOUT_DEFAULTS = {
+  'node-ingest':     {left:'40px',   top:'120px'},
+  'node-slicer':     {left:'230px',  top:'120px'},
+  'node-supervisor': {left:'460px',  top:'60px'},
+  'node-engineer':   {left:'680px',  top:'30px'},
+  'node-device':     {left:'680px',  top:'160px'},
+  'node-logistics':  {left:'680px',  top:'280px'},
+  'node-vision':     {left:'680px',  top:'390px'},
+  'node-escalation': {left:'460px',  top:'340px'},
+};
+function resetLayout() {
+  Object.entries(LAYOUT_DEFAULTS).forEach(([id,pos]) => {
+    const el = document.getElementById(id);
+    if (el) { el.style.left = pos.left; el.style.top = pos.top; }
+  });
+  drawEdges();
+}
+function toggleEdgeAnim() {
+  _edgeAnimOn = !_edgeAnimOn;
+  document.getElementById('edgeAnimBtn').style.color = _edgeAnimOn ? 'var(--cu)' : 'var(--muted)';
+  drawEdges();
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  refreshMeter();
+  setInterval(refreshMeter, 8000);
+  appendMsg('sys', 'CU Department initialized. Select a department or launch a run.');
+  drawEdges();
+});
+</script>
+</body>
+</html>
+""")
