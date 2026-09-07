@@ -7796,9 +7796,9 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
       </div>
     </div>
 
-    <!-- ESCALATION NODE (center-right of canvas) -->
+    <!-- ESCALATION NODE (far right) -->
     <div class="a-node" id="node-astra" data-agent="astra"
-         style="left:260px;top:340px;width:200px;background:rgba(239,68,68,.07);border-color:rgba(239,68,68,.3);color:var(--ast)">
+         style="left:500px;top:240px;width:200px;background:rgba(239,68,68,.07);border-color:rgba(239,68,68,.3);color:var(--ast)">
       <div class="an-head">
         <span class="an-icon">✦</span>
         <div class="an-titles">
@@ -7813,6 +7813,46 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-
           <span class="brain-pill b2" onclick="openBrain(event,'astra','b2')">Brain 2 ✎</span>
         </div>
         <span class="an-status st-standby" id="st-astra">STANDBY</span>
+      </div>
+    </div>
+
+    <!-- VELVET QC NODE -->
+    <div class="a-node" id="node-velvet-qc" data-agent="velvet-qc"
+         style="left:270px;top:240px;width:190px;background:rgba(6,182,212,.07);border-color:rgba(6,182,212,.3);color:#06b6d4">
+      <div class="an-head">
+        <span class="an-icon">◉</span>
+        <div class="an-titles">
+          <div class="an-name">VELVET</div>
+          <div class="an-role">QC → Hannibal</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen2.5-Coder-3B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'velvet-qc','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'velvet-qc','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-velvet-qc">READY</span>
+      </div>
+    </div>
+
+    <!-- VELVET TRACK NODE -->
+    <div class="a-node" id="node-velvet-track" data-agent="velvet-track"
+         style="left:270px;top:420px;width:190px;background:rgba(16,185,129,.07);border-color:rgba(16,185,129,.3);color:#10b981">
+      <div class="an-head">
+        <span class="an-icon">◈</span>
+        <div class="an-titles">
+          <div class="an-name">VELVET-TRACK</div>
+          <div class="an-role">Project Board Manager</div>
+        </div>
+      </div>
+      <div class="an-body">
+        <div class="an-model">Qwen2.5-Coder-1.5B</div>
+        <div class="an-brains">
+          <span class="brain-pill b1" onclick="openBrain(event,'velvet-track','b1')">Brain 1</span>
+          <span class="brain-pill b2" onclick="openBrain(event,'velvet-track','b2')">Brain 2 ✎</span>
+        </div>
+        <span class="an-status st-ready" id="st-velvet-track">READY</span>
       </div>
     </div>
 
@@ -7918,7 +7958,9 @@ const AGENTS = {
   murdock: { name:'Murdock',  role:'Logic & Architecture Specialist',  model:'Qwen3-Coder-30B', icon:'⚙',  color:'var(--mur)', status:'ready' },
   face:    { name:'Face',     role:'UI/UX & Frontend Virtuoso',        model:'Qwen2.5-Coder-7B', icon:'◱', color:'var(--fac)', status:'ready' },
   ba:      { name:'B.A.',     role:'Device & Execution Engine',        model:'Qwen2.5-Coder-3B', icon:'⬡', color:'var(--ba)',  status:'ready' },
-  astra:   { name:'Astra',    role:'Escalation Doctor',                model:'Gemini 3.8 / Qwen3-30B', icon:'✦', color:'var(--ast)', status:'standby' },
+    astra:   { name:'Astra',        role:'Escalation Doctor',                model:'Gemini 3.8 / Qwen3-30B', icon:'✦', color:'var(--ast)', status:'standby' },
+  'velvet-track':{ name:'VELVET-TRACK', role:'Project Board Manager',         model:'Qwen2.5-Coder-1.5B',     icon:'◈', color:'#10b981',    status:'ready'   },
+  'velvet-qc':   { name:'VELVET',       role:'QC Specialist → Hannibal',      model:'Qwen2.5-Coder-3B',       icon:'◉', color:'#06b6d4',    status:'ready'   },
 };
 
 // ── STATE ─────────────────────────────────────────────────────────────────
@@ -7933,8 +7975,17 @@ const EDGES = [
   {from:'node-hannibal', to:'node-murdock', color:'rgba(240,180,41,.35)'},
   {from:'node-hannibal', to:'node-face',    color:'rgba(240,180,41,.35)'},
   {from:'node-hannibal', to:'node-ba',      color:'rgba(240,180,41,.35)'},
-  {from:'node-hannibal', to:'node-astra',   color:'rgba(239,68,68,.3)', dash:true},
-  {from:'node-astra',    to:'node-hannibal',color:'rgba(239,68,68,.25)',dash:true},
+  // Workers → VELVET QC (all dept outputs route through QC)
+  {from:'node-murdock',  to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
+  {from:'node-face',     to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
+  {from:'node-ba',       to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
+  // VELVET QC → Hannibal (pass confirmation)
+  {from:'node-velvet-qc',to:'node-hannibal',  color:'rgba(6,182,212,.4)', dash:true},
+  // VELVET QC → Astra (3-error escalation)
+  {from:'node-velvet-qc',to:'node-astra',     color:'rgba(239,68,68,.35)',dash:true},
+  {from:'node-astra',    to:'node-hannibal',  color:'rgba(239,68,68,.25)',dash:true},
+  // VELVET TRACK (board manager, separate lane)
+  {from:'node-hannibal', to:'node-velvet-track', color:'rgba(16,185,129,.25)'},
 ];
 function nodeCtr(id){ const e=document.getElementById(id); return e?{x:e.offsetLeft+e.offsetWidth/2,y:e.offsetTop+e.offsetHeight/2}:{x:0,y:0}; }
 function drawEdges(){
@@ -8135,11 +8186,13 @@ async function refreshMeter(){
 
 // ── CANVAS UTILS ──────────────────────────────────────────────────────────
 const DEFAULTS={
-  'node-hannibal':{left:'30px',top:'80px'},
-  'node-murdock': {left:'30px',top:'240px'},
-  'node-face':    {left:'30px',top:'400px'},
-  'node-ba':      {left:'30px',top:'540px'},
-  'node-astra':   {left:'260px',top:'340px'},
+  'node-hannibal':     {left:'30px', top:'80px'},
+  'node-murdock':      {left:'30px', top:'240px'},
+  'node-face':         {left:'30px', top:'400px'},
+  'node-ba':           {left:'30px', top:'540px'},
+  'node-velvet-qc':    {left:'270px',top:'240px'},
+  'node-velvet-track': {left:'270px',top:'420px'},
+  'node-astra':        {left:'500px',top:'240px'},
 };
 function resetLayout(){ Object.entries(DEFAULTS).forEach(([id,p])=>{ const e=document.getElementById(id); if(e){e.style.left=p.left;e.style.top=p.top;} }); drawEdges(); }
 function toggleAnim(){
@@ -8556,6 +8609,7 @@ async def velvet_qc_run(pid: str, req: NexusQCRunRequest):
                                     "evidence": evidence[:200]})
         except subprocess.TimeoutExpired:
             d["state"] = "FAIL"
+            d["attempts"] = d.get("attempts", 0) + 1
             results.append({"id": d["id"], "state": "FAIL", "reason": "timeout"})
         except Exception as e:
             results.append({"id": d["id"], "state": "FAIL", "reason": str(e)})
@@ -8564,6 +8618,29 @@ async def velvet_qc_run(pid: str, req: NexusQCRunRequest):
     if gate["closeable"]:
         project["status"] = "THRESHOLD"
     _proj_save(pid, project)
+    # ── 3-error escalation check (Velvet → Astra routing) ─────────────────────
+    escalations = []
+    for d in project["deliverables"]:
+        if d.get("attempts", 0) >= 3 and d.get("state") == "FAIL":
+            bundle = {
+                "deliverable_id": d["id"],
+                "statement": d["statement"],
+                "verify_cmd": d.get("verify_cmd", ""),
+                "attempts": d["attempts"],
+                "last_evidence": d.get("evidence", "")[:400],
+                "project_id": pid,
+                "project_name": project.get("name", ""),
+                "goal": project.get("goal", ""),
+            }
+            escalations.append(bundle)
+            _build_log_append(pid, {
+                "event_type": "escalation",
+                "actor": "velvet-qc",
+                "deliverable": d["id"],
+                "message": f"3-error threshold breached on {d['id']} — routing to Astra",
+                "bundle": bundle,
+            })
+    # ──────────────────────────────────────────────────────────────────────────
     board = _board_load()
     if pid in board["projects"]:
         board["projects"][pid]["completion"] = project["completion"]
@@ -8577,7 +8654,7 @@ async def velvet_qc_run(pid: str, req: NexusQCRunRequest):
     except Exception:
         pass
     return {"ok": True, "results": results, "completion": project["completion"],
-            "gate": gate, "gpu_warning": gpu_running}
+            "gate": gate, "gpu_warning": gpu_running, "escalations": escalations}
 
 
 @app.post("/api/velvet/project/{pid}/close")
@@ -8698,29 +8775,45 @@ async def velvet_gpu_check():
         return {"running": False, "error": str(e)}
 
 
-# ── NEXUS agent brain ─────────────────────────────────────────────────────────
+# ── VELVET agent brains (official QC node profile) ────────────────────────────
 VELVET_TRACK_BRAIN = (
-    "You are VELVET-TRACK, the project board manager for CRANE. "
-    "Your only job is to maintain accurate, real-time records of every project. "
-    "You create project records, freeze specs with SHA hashes, write HANDOFF.md files, "
-    "and update the board. You never execute code, never write implementation. "
-    "You speak in structured formats: JSON specs, markdown handoffs, build log events. "
-    "Every claim you make is backed by a verify command or a file path. "
-    "You are the memory of CRANE. Nothing is done until you record it."
+    "You are VELVET-TRACK, the Project Board Manager for CRANE. "
+    "You report directly to Hannibal (Supervisor Dispatcher). "
+    "Your responsibilities: create project records the moment Hannibal initiates a run, "
+    "freeze specs with SHA hashes to prevent goal-post movement, write and maintain HANDOFF.md, "
+    "update the live project board, and create GitHub repositories for new projects. "
+    "You never execute implementation code. You speak only in structured formats: "
+    "JSON specs, YAML deliverables, markdown handoffs, build log events. "
+    "Every claim is backed by a verify command or a file path. "
+    "You are the memory of CRANE. Nothing is done until you record it. "
+    "You flag immediately if a spec SHA changes mid-run — that is goal-post movement and the run aborts."
 )
 
 VELVET_QC_BRAIN = (
-    "You are VELVET-QC, the quality control agent for CRANE. "
-    "You run verify commands, inspect test output, and mark deliverables PASS or FAIL. "
-    "You never accept an agent's self-report as proof. You run the command and read the output. "
-    "You enforce: completion >= 0.90 AND all weight-3 deliverables must PASS before close. "
-    "You check GPU waste before every project close. "
-    "You write the close section of HANDOFF.md: timeline, lessons, agent performance, recommendations. "
-    "Your evidence is always raw stdout/stderr bytes, never a summary. "
-    "If a deliverable fails 3 times, you escalate to Astra with the full error trace."
+    "You are VELVET — Quality Control and Verification Specialist for CRANE. "
+    "You report directly to Hannibal (Supervisor Dispatcher). "
+    "Your designation: dedicated gatekeeper for validation before final integration. "
+    "\n\nBrain 1 — Agent Expertise: "
+    "Automated test verification, lint compliance, security regression screening, "
+    "and output validation against strict YAML spec deliverables. "
+    "You never accept an agent's self-report as proof — you run the verify command and inspect raw output. "
+    "You enforce: completion >= 0.90 AND every weight-3 deliverable PASSES before any close. "
+    "\n\nRouting Protocol: "
+    "After each department worker (Murdock / Face / B.A.) produces a code artifact or output: "
+    "(1) You run the verify command. "
+    "(2) PASS → mark deliverable, update completion meter, report ready for integration to Hannibal. "
+    "(3) FAIL → increment attempt counter, return error log to the worker with exact failure bytes. "
+    "(4) 3rd consecutive failure on same deliverable → trigger escalation to Astra with full context bundle: "
+    "    error trace, original spec, failed code state, attempts log. "
+    "\n\nAdditional gates you enforce on every project close: "
+    "GPU waste check (hard stop if running), GitHub SHA verification (local must match remote), "
+    "spec SHA integrity (must match freeze hash). "
+    "Your evidence is always raw stdout/stderr bytes — never a summary, never an agent's opinion. "
+    "You write the final HANDOFF.md close section: timeline, lessons learned, "
+    "agent performance report, QC results, and improvement recommendations per agent."
 )
 
-# Register NEXUS agents in the A-Team roster
+# Register VELVET in the A-Team roster
 ATEAM["velvet-track"] = {
     "name": "VELVET-TRACK",
     "role": "Project Board Manager",
@@ -8730,18 +8823,18 @@ ATEAM["velvet-track"] = {
     "color": "#10b981",
     "icon": "◈",
     "brain1": VELVET_TRACK_BRAIN,
-    "brain2_template": "Active project specs, board state, and build log conventions for current session.",
+    "brain2_template": "Active project specs, board state, build log conventions, and GitHub repo map for current session.",
 }
 ATEAM["velvet-qc"] = {
-    "name": "VELVET-QC",
-    "role": "Quality Control & Handoff",
+    "name": "VELVET",
+    "role": "QC & Verification Specialist → Hannibal",
     "dept": "Project Intelligence",
     "model_id": "local:qwen-coder-3b",
     "model_label": "Qwen2.5-Coder-3B",
     "color": "#06b6d4",
     "icon": "◉",
     "brain1": VELVET_QC_BRAIN,
-    "brain2_template": "Project-specific test commands, acceptance criteria, and failure patterns.",
+    "brain2_template": "Project-specific acceptance test suites, assertion criteria, and visual/functional regression scripts for active branch.",
 }
 _agent_brain2["velvet-track"] = ATEAM["velvet-track"]["brain2_template"]
 _agent_brain2["velvet-qc"]    = ATEAM["velvet-qc"]["brain2_template"]
