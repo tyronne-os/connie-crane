@@ -12,5 +12,6 @@
 !design/
 !design/**
 !crane_ledger.py
+!velvet_runner.py
 !specs/
 !specs/**

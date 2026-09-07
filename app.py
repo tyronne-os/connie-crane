@@ -7524,7 +7524,238 @@ async def cu_status():
     }
 
 
-# ── /cu page (Work Order 2) ───────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CRANE-CU STUDIO — agent state machine + onAgentComplete → VELVET certification
+#
+# Node colour IS the state machine. Three colours carry the whole story:
+#   GOLD  #f0b429  WORKING    — assigned and unproven. An agent cannot leave gold.
+#   JADE  #10b981  CERTIFIED  — VELVET ran the gates and stamped it done.
+#   RED   #ef4444  ESCALATED  — 3-attempt threshold breached, Astra has the bundle.
+#
+# An agent reporting "done" does not change its colour. Only VELVET can.
+# ══════════════════════════════════════════════════════════════════════════════
+
+import velvet_runner as _velvet
+from starlette.concurrency import run_in_threadpool as _in_thread
+
+CU_STATE_FILE = os.path.expanduser("~/.crane/agent_states.json")
+
+_CU_WORKERS = ["hannibal", "murdock", "face", "ba", "astra", "velvet-qc", "velvet-track"]
+
+
+def _cu_states_load() -> dict:
+    if os.path.exists(CU_STATE_FILE):
+        try:
+            with open(CU_STATE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {k: {"state": "IDLE", "work_order": None, "attempts": 0,
+                "started_at": None, "certified_at": None, "build_seconds": 0,
+                "qc": None, "note": ""} for k in _CU_WORKERS}
+
+
+def _cu_states_save(states: dict):
+    os.makedirs(os.path.dirname(CU_STATE_FILE), exist_ok=True)
+    with open(CU_STATE_FILE, "w") as f:
+        json.dump(states, f, indent=2)
+
+
+def _gpu_is_on() -> bool:
+    try:
+        return bool(_meter_load().get("running", False))
+    except Exception:
+        return False
+
+
+def _resolve_model(agent_key: str) -> dict:
+    """Dual-tier: elevate to the GPU model when berylize-node is live."""
+    a = ATEAM.get(agent_key, {})
+    if _gpu_is_on() and a.get("model_gpu"):
+        return {"model_id": a["model_gpu"], "label": a.get("model_gpu_label", a["model_gpu"]),
+                "tier": "gpu"}
+    return {"model_id": a.get("model_id", "local:qwen-coder-3b"),
+            "label": a.get("model_label", "?"), "tier": "local"}
+
+
+# Dual-tier GPU elevation for the two agents whose spec models are GPU-only.
+if "murdock" in ATEAM:
+    ATEAM["murdock"]["model_id"]        = "local:qwen-coder-7b"
+    ATEAM["murdock"]["model_label"]     = "Qwen2.5-Coder-7B"
+    ATEAM["murdock"]["model_gpu"]       = "local:qwen-coder-32b"
+    ATEAM["murdock"]["model_gpu_label"] = "Qwen2.5-Coder-32B"
+if "face" in ATEAM:
+    ATEAM["face"]["model_id"]        = "local:qwen-coder-7b"
+    ATEAM["face"]["model_label"]     = "Qwen2.5-Coder-7B"
+    ATEAM["face"]["model_gpu"]       = "local:qwen3-coder-30b"
+    ATEAM["face"]["model_gpu_label"] = "DeepSeek-V2 / Qwen3-30B"
+
+
+class CUAssignRequest(_BM):
+    agent: str
+    work_order: str = ""
+    note: str = ""
+
+class CUCompleteRequest(_BM):
+    agent: str
+    project_id: str = ""
+    work_order: str = ""
+    deliverables: list = []
+    files: list = []
+    test_cmd: str = ""
+
+class CUResetRequest(_BM):
+    agent: str = ""   # empty = reset all
+
+
+@app.get("/api/cu/agent/states")
+async def cu_agent_states():
+    """Canvas polls this. Returns node colour state + resolved model per agent."""
+    states = _cu_states_load()
+    gpu_on = _gpu_is_on()
+    out = {}
+    for k in _CU_WORKERS:
+        st = states.get(k, {"state": "IDLE"})
+        m = _resolve_model(k)
+        elapsed = 0
+        if st.get("started_at") and not st.get("certified_at"):
+            elapsed = int(time.time() - st["started_at"])
+        elif st.get("started_at") and st.get("certified_at"):
+            elapsed = int(st["certified_at"] - st["started_at"])
+        out[k] = {**st, "model": m["label"], "tier": m["tier"], "elapsed_seconds": elapsed}
+    return {"agents": out, "gpu_on": gpu_on,
+            "counts": {
+                "certified":  len([v for v in out.values() if v["state"] == "CERTIFIED"]),
+                "working":    len([v for v in out.values() if v["state"] == "WORKING"]),
+                "escalated":  len([v for v in out.values() if v["state"] == "ESCALATED"]),
+                "idle":       len([v for v in out.values() if v["state"] == "IDLE"]),
+            }}
+
+
+@app.post("/api/cu/agent/assign")
+async def cu_agent_assign(req: CUAssignRequest):
+    """Hannibal assigns work → node turns GOLD. Unproven until VELVET says otherwise."""
+    states = _cu_states_load()
+    if req.agent not in states:
+        return {"error": f"unknown agent {req.agent}"}
+    states[req.agent].update({
+        "state": "WORKING", "work_order": req.work_order or "WO-adhoc",
+        "started_at": time.time(), "certified_at": None,
+        "attempts": states[req.agent].get("attempts", 0), "note": req.note, "qc": None,
+    })
+    _cu_states_save(states)
+    return {"ok": True, "agent": req.agent, "state": "WORKING"}
+
+
+@app.post("/api/cu/agent/complete")
+async def cu_agent_complete(req: CUCompleteRequest):
+    """
+    onAgentComplete hook. The agent claims done — VELVET decides if that's true.
+
+    Runs all four gates via velvet_runner, writes handoff.doc, and sets the node
+    colour from the result. Zero human interaction.
+    """
+    states = _cu_states_load()
+    if req.agent not in states:
+        return {"error": f"unknown agent {req.agent}"}
+
+    st = states[req.agent]
+    st["attempts"] = st.get("attempts", 0) + 1
+    build_seconds = int(time.time() - st["started_at"]) if st.get("started_at") else 0
+
+    # Gates shell out, and a verify command may curl this very app. Running them
+    # inline would block the event loop and the app could not answer itself —
+    # every HTTP-based assertion would fail for the wrong reason.
+    report = await _in_thread(
+        _velvet.on_agent_complete,
+        agent=req.agent,
+        project_id=req.project_id,
+        work_order=req.work_order or st.get("work_order") or "",
+        deliverables=req.deliverables,
+        files=req.files,
+        test_cmd=req.test_cmd,
+        attempts=st["attempts"],
+        build_seconds=build_seconds,
+    )
+
+    st["state"] = report["node_state"]
+    st["build_seconds"] = build_seconds
+    st["qc"] = {
+        "verdict": report["verdict"],
+        "completion": report["completion"],
+        "duration_ms": report["duration_ms"],
+        "gates": [{"gate": g["gate"], "state": g["state"], "detail": g.get("detail", "")}
+                  for g in report["gates"]],
+    }
+    if report["node_state"] == "CERTIFIED":
+        st["certified_at"] = report["certified_at"]
+
+    # VELVET herself lights up while adjudicating, then returns to ready.
+    states["velvet-qc"]["state"] = "CERTIFIED" if report["verdict"] == "PASS" else "WORKING"
+    states["velvet-qc"]["note"] = f"adjudicated {req.agent} → {report['verdict']}"
+
+    _cu_states_save(states)
+    return {"ok": True, "agent": req.agent, "node_state": report["node_state"],
+            "verdict": report["verdict"], "completion": report["completion"],
+            "gates": st["qc"]["gates"], "build_seconds": build_seconds,
+            "escalation": report.get("escalation"), "handoff_doc": report.get("handoff_doc")}
+
+
+@app.post("/api/cu/agent/reset")
+async def cu_agent_reset(req: CUResetRequest):
+    states = _cu_states_load()
+    targets = [req.agent] if req.agent else list(states.keys())
+    for t in targets:
+        if t in states:
+            states[t] = {"state": "IDLE", "work_order": None, "attempts": 0,
+                         "started_at": None, "certified_at": None, "build_seconds": 0,
+                         "qc": None, "note": ""}
+    _cu_states_save(states)
+    return {"ok": True, "reset": targets}
+
+
+@app.get("/api/cu/handoff")
+async def cu_handoff():
+    return {"content": _velvet.read_handoff_doc(300), "path": _velvet.HANDOFF_DOC}
+
+
+@app.get("/api/cu/qc/recent")
+async def cu_qc_recent():
+    return {"runs": _velvet.recent_qc_runs(20)}
+
+
+@app.get("/api/cu/devui/status")
+async def cu_devui_status():
+    """MAF DevUI OpenTelemetry endpoint probe (localhost:8080)."""
+    try:
+        r = _requests.get("http://127.0.0.1:8080/", timeout=2)
+        return {"reachable": True, "status": r.status_code, "endpoint": "http://127.0.0.1:8080"}
+    except Exception as e:
+        return {"reachable": False, "endpoint": "http://127.0.0.1:8080", "error": str(e)[:120]}
+
+
+@app.get("/api/cu/file")
+async def cu_read_file(path: str = "/home/hunt/app.py", start: int = 1, lines: int = 220):
+    """Read a slice of a file for the IDE station."""
+    safe_root = "/home/hunt"
+    p = os.path.abspath(path)
+    if not p.startswith(safe_root) or not os.path.isfile(p):
+        return {"error": "path outside workspace or not a file"}
+    try:
+        with open(p, "r", errors="ignore") as f:
+            all_lines = f.readlines()
+        start = max(1, start)
+        chunk = all_lines[start - 1: start - 1 + lines]
+        return {"path": p, "start": start, "total_lines": len(all_lines),
+                "content": "".join(chunk),
+                "language": "python" if p.endswith(".py") else
+                            "javascript" if p.endswith((".js", ".jsx")) else "text"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── /cu page — CRANE-CU STUDIO ────────────────────────────────────────────────
 
 @app.get("/cu", response_class=HTMLResponse)
 async def serve_cu():
@@ -7533,688 +7764,803 @@ async def serve_cu():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>CRANE — CU Department</title>
+<title>CRANE-CU STUDIO</title>
 <style>
 :root{
-  --bg:#0d0d10;--panel:#16151a;--card:#1c1b22;--border:#2a2433;
-  --text:#eef2f3;--muted:#8a9296;--text-dim:#63696c;
-  --cu:#818cf8;--cu-dim:rgba(129,140,248,.1);--cu-border:rgba(129,140,248,.28);
-  --green:#2ee6b8;--red:#ef4444;--orange:#f59e0b;--blue:#38bdf8;
-  --gold:#f0b429;
-  --han:#f0b429; --mur:#38bdf8; --fac:#2ee6b8; --ba:#a78bfa; --ast:#ef4444;
+  /* ground */
+  --void:#08080a; --grid:#18181b; --chrome:#0d0d10; --surface:#121216; --edge:#27272a;
+  --text:#e8e6e3; --text-2:#a1a1aa; --text-dim:#6b6b73; --text-faint:#4a4a52;
+
+  /* GOLD — working, unproven. Deep matte plane, razor edge. No bloom. */
+  --au-surface:#221a06; --au-bevel:#34280b; --au-floor:#150f04;
+  --au-edge:#f0b429;    --au-text:#f5cf72;  --au-dim:#9c8340;
+
+  /* JADE — certified by VELVET */
+  --jd-surface:#072019; --jd-bevel:#0b3327; --jd-floor:#04140f;
+  --jd-edge:#10b981;    --jd-text:#6ee7b7;  --jd-dim:#3d8a6f;
+
+  /* RED — escalated, 3-error threshold */
+  --rd-surface:#240b0b; --rd-bevel:#361010; --rd-floor:#170707;
+  --rd-edge:#ef4444;    --rd-text:#fca5a5;  --rd-dim:#9c5555;
+
+  --blue:#38bdf8; --slate:#64748b; --gutter:#1e3052;
+  --mono:'JetBrains Mono','Fira Code',ui-monospace,monospace;
+  --ui:'Inter',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{height:100%;overflow:hidden;}
-body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;display:flex;flex-direction:column;}
+body{background:var(--void);color:var(--text);font-family:var(--ui);font-size:13px;
+     display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;}
 
-/* ── TOPBAR ── */
-#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:14px;flex-shrink:0;z-index:100;}
-.tb-brand{font-weight:800;font-size:13px;letter-spacing:2px;color:var(--cu);}
-.top-nav{display:flex;gap:2px;}
-.top-nav a{color:var(--muted);text-decoration:none;padding:0 10px;height:32px;display:flex;align-items:center;font-size:12px;font-weight:500;border-radius:5px;transition:.15s;}
-.top-nav a:hover{color:var(--text);background:rgba(255,255,255,.05);}
-.top-nav a.active{color:var(--cu);background:var(--cu-dim);}
-.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
-.chip{font-size:9px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;border-radius:3px;border:1px solid var(--cu-border);color:var(--cu);background:var(--cu-dim);}
-.chip.live{color:var(--green);border-color:rgba(46,230,184,.3);background:rgba(46,230,184,.07);}
+/* ── CHROME ─────────────────────────────────────────────────────────────── */
+#chrome{height:38px;background:var(--chrome);border-bottom:1px solid var(--edge);
+        display:flex;align-items:center;padding:0 12px;gap:14px;flex-shrink:0;}
+.ch-title{font-family:var(--mono);font-size:10px;letter-spacing:2.5px;color:var(--text-2);}
+.ch-title b{color:var(--au-edge);font-weight:700;}
+.ch-nav{display:flex;gap:1px;margin-left:6px;}
+.ch-nav a{color:var(--text-dim);text-decoration:none;font-size:11px;padding:0 10px;height:26px;
+          display:flex;align-items:center;border-radius:3px;transition:.12s;}
+.ch-nav a:hover{color:var(--text);background:rgba(255,255,255,.04);}
+.ch-nav a.on{color:var(--au-edge);background:rgba(240,180,41,.08);}
+.ch-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.pill{font-family:var(--mono);font-size:9px;letter-spacing:1.2px;padding:3px 8px;
+      border:1px solid var(--edge);border-radius:3px;color:var(--text-dim);}
+.pill.au{border-color:rgba(240,180,41,.35);color:var(--au-edge);background:rgba(240,180,41,.06);}
+.pill.jd{border-color:rgba(16,185,129,.35);color:var(--jd-edge);background:rgba(16,185,129,.06);}
+.pill.rd{border-color:rgba(239,68,68,.35);color:var(--rd-edge);background:rgba(239,68,68,.06);}
 
-/* ── FULL-BLEED LAYOUT ── */
-#workspace{display:flex;flex:1;overflow:hidden;position:relative;}
+/* ── SPLIT ──────────────────────────────────────────────────────────────── */
+#split{display:flex;flex:1;overflow:hidden;}
+#vsplit{width:1px;background:var(--edge);cursor:col-resize;flex-shrink:0;transition:.12s;}
+#vsplit:hover{background:var(--au-edge);}
 
-/* ── CANVAS (left 60%) ── */
-#canvas-wrap{flex:1;position:relative;overflow:hidden;}
-.grid-bg{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(129,140,248,.1) 1px,transparent 1px);background-size:30px 30px;pointer-events:none;}
-#edge-svg{position:absolute;inset:0;pointer-events:none;overflow:visible;}
-.edge{stroke-width:1.5;fill:none;}
-.edge-dash{stroke-dasharray:6 4;animation:dash 1.4s linear infinite;}
-@keyframes dash{to{stroke-dashoffset:-20;}}
+/* ── LEFT: CANVAS ───────────────────────────────────────────────────────── */
+#canvas-pane{flex:1 1 58%;min-width:420px;position:relative;overflow:hidden;background:var(--void);}
+#grid{position:absolute;inset:0;pointer-events:none;
+      background-image:linear-gradient(var(--grid) 1px,transparent 1px),
+                       linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+      background-size:24px 24px;opacity:.25;}
+#canvas-title{position:absolute;top:14px;left:0;right:0;text-align:center;pointer-events:none;
+  font-family:var(--mono);font-size:11px;letter-spacing:4px;color:var(--au-dim);z-index:1;}
+#edges{position:absolute;inset:0;overflow:visible;pointer-events:none;}
+.wire{fill:none;stroke-width:1;}
+.wire.flow{stroke-dasharray:5 5;animation:flow 1.1s linear infinite;}
+@keyframes flow{to{stroke-dashoffset:-20;}}
 
-/* canvas toolbar */
-#canvas-toolbar{position:absolute;top:10px;left:10px;display:flex;gap:6px;z-index:10;}
-.ct-btn{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:10px;font-weight:700;letter-spacing:1px;color:var(--muted);cursor:pointer;transition:.15s;}
-.ct-btn:hover{color:var(--text);border-color:var(--cu);}
-.ct-btn.active{color:var(--cu);border-color:var(--cu);background:var(--cu-dim);}
+/* canvas tools */
+#tools{position:absolute;top:10px;left:10px;display:flex;gap:5px;z-index:20;}
+.tool{background:var(--surface);border:1px solid var(--edge);border-radius:3px;
+      padding:4px 9px;font-family:var(--mono);font-size:9px;letter-spacing:1.2px;
+      color:var(--text-dim);cursor:pointer;transition:.12s;}
+.tool:hover{color:var(--text);border-color:var(--au-edge);}
+.tool.on{color:var(--au-edge);border-color:rgba(240,180,41,.4);background:rgba(240,180,41,.07);}
 
-/* run launcher bar */
-#run-bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:10;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px;width:520px;box-shadow:0 8px 32px rgba(0,0,0,.6);}
-#run-bar textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;resize:none;height:28px;line-height:1.4;}
-#run-bar textarea::placeholder{color:var(--text-dim);}
-.run-mode{background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:10px;padding:3px 6px;outline:none;}
-.run-fire{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;transition:.15s;}
-.run-fire:hover{background:#6366f1;}
-#run-wo-label{font-size:10px;color:var(--muted);white-space:nowrap;}
+/* ── NODE: bevel-by-border, zero shadow ─────────────────────────────────── */
+.node{position:absolute;width:196px;border:1px solid var(--edge);border-radius:5px;
+      background:var(--surface);cursor:grab;user-select:none;overflow:hidden;
+      border-top-color:#2f2f34;transition:border-color .18s,background .18s;}
+.node:active{cursor:grabbing;}
+.node.sel{outline:1px solid var(--au-edge);outline-offset:1px;}
 
-/* ── AGENT NODES ── */
-.a-node{position:absolute;width:190px;border-radius:12px;border:1.5px solid;cursor:pointer;transition:.18s;user-select:none;backdrop-filter:blur(4px);}
-.a-node:hover{filter:brightness(1.12);transform:translateY(-2px);}
-.a-node.selected{box-shadow:0 0 0 2px var(--cu),0 12px 36px rgba(0,0,0,.7);}
-.an-head{padding:10px 12px 6px;display:flex;align-items:center;gap:8px;}
-.an-icon{font-size:18px;line-height:1;}
-.an-titles{flex:1;}
-.an-name{font-size:13px;font-weight:800;letter-spacing:.5px;}
-.an-role{font-size:9px;opacity:.65;margin-top:1px;}
-.an-body{padding:0 12px 10px;}
-.an-model{font-size:9px;font-weight:700;letter-spacing:1px;opacity:.55;margin-bottom:6px;font-family:'JetBrains Mono',monospace;}
-.an-brains{display:flex;gap:4px;}
-.brain-pill{font-size:8px;font-weight:700;letter-spacing:1px;padding:2px 7px;border-radius:3px;cursor:pointer;transition:.12s;}
-.brain-pill.b1{background:rgba(255,255,255,.08);color:var(--muted);}
-.brain-pill.b1:hover{background:rgba(255,255,255,.14);color:var(--text);}
-.brain-pill.b2{background:rgba(129,140,248,.15);color:var(--cu);border:1px solid var(--cu-border);}
-.brain-pill.b2:hover{background:rgba(129,140,248,.25);}
-.an-status{font-size:8px;font-weight:700;letter-spacing:1px;margin-top:6px;padding:2px 7px;border-radius:3px;display:inline-block;}
-.st-ready{background:rgba(46,230,184,.13);color:#2ee6b8;}
-.st-standby{background:rgba(245,158,11,.13);color:#f59e0b;}
-.st-running{background:rgba(129,140,248,.2);color:#818cf8;}
-.st-error{background:rgba(239,68,68,.13);color:#ef4444;}
+.node-hd{display:flex;align-items:center;gap:7px;padding:7px 9px 5px;
+         border-bottom:1px solid rgba(255,255,255,.045);}
+.node-gl{font-size:14px;line-height:1;flex-shrink:0;}
+.node-id{flex:1;min-width:0;}
+.node-nm{font-size:11.5px;font-weight:700;letter-spacing:.3px;white-space:nowrap;
+         overflow:hidden;text-overflow:ellipsis;}
+.node-rl{font-size:8.5px;color:var(--text-dim);margin-top:1px;white-space:nowrap;
+         overflow:hidden;text-overflow:ellipsis;}
+.node-bd{padding:6px 9px 8px;}
+.node-md{font-family:var(--mono);font-size:8.5px;letter-spacing:.5px;color:var(--text-dim);
+         margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.node-task{font-size:9.5px;color:var(--text-2);margin-bottom:6px;display:flex;
+           align-items:center;gap:5px;}
+.node-task .dot{width:4px;height:4px;border-radius:50%;background:currentColor;flex-shrink:0;}
 
-/* ── RIGHT PANEL (40%) ── */
-#right-panel{width:420px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.node-tel{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;}
+.tel{font-family:var(--mono);font-size:8px;letter-spacing:.6px;padding:1.5px 5px;
+     border-radius:2px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.05);
+     color:var(--text-dim);}
 
-/* agent header */
-#rp-agent-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
-.rp-agent-icon{font-size:22px;}
-.rp-agent-info{flex:1;}
-.rp-agent-name{font-size:14px;font-weight:800;letter-spacing:.5px;}
-.rp-agent-role{font-size:10px;color:var(--muted);margin-top:1px;}
-.rp-agent-model{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--muted);margin-top:3px;}
+.node-st{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:1.4px;
+         padding:2.5px 7px;border-radius:2px;display:inline-block;}
+.node-brains{display:flex;gap:3px;margin-top:6px;}
+.bp{font-family:var(--mono);font-size:7.5px;letter-spacing:.8px;padding:2px 6px;border-radius:2px;
+    cursor:pointer;border:1px solid rgba(255,255,255,.07);background:rgba(0,0,0,.3);
+    color:var(--text-dim);transition:.12s;}
+.bp:hover{color:var(--text);border-color:rgba(255,255,255,.18);}
 
-/* tabs */
-.rp-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
-.rp-tab{flex:1;padding:8px 0;font-size:9px;font-weight:700;letter-spacing:1.5px;text-align:center;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:.15s;}
-.rp-tab.active{color:var(--cu);border-bottom-color:var(--cu);}
+/* STATE: IDLE */
+.node.idle .node-st{background:rgba(255,255,255,.05);color:var(--text-dim);}
 
-/* brain panels */
-.brain-panel{flex:1;overflow-y:auto;padding:14px;display:none;}
-.brain-panel.show{display:block;}
-.brain-panel::-webkit-scrollbar{width:3px;}
-.brain-panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-.bp-label{font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);margin-bottom:8px;}
-.bp-text{font-size:11px;line-height:1.65;color:var(--text);background:var(--card);border:1px solid var(--border);border-radius:7px;padding:10px 12px;}
-.bp-edit{width:100%;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:11px;font-family:'Inter',sans-serif;padding:10px 12px;resize:none;outline:none;min-height:100px;margin-top:10px;transition:.15s;}
-.bp-edit:focus{border-color:var(--cu);}
-.bp-save-btn{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:10px;font-weight:700;cursor:pointer;margin-top:8px;transition:.15s;}
-.bp-save-btn:hover{background:#6366f1;}
-.bp-saved{font-size:9px;color:var(--green);margin-left:8px;opacity:0;transition:.3s;}
+/* STATE: WORKING — gold plane, top bevel catches light */
+.node.working{background:var(--au-surface);border-color:var(--au-edge);
+              border-top-color:var(--au-bevel);border-bottom-color:var(--au-floor);}
+.node.working .node-nm{color:var(--au-text);}
+.node.working .node-rl,.node.working .node-md{color:var(--au-dim);}
+.node.working .node-task{color:var(--au-text);}
+.node.working .node-hd{border-bottom-color:rgba(240,180,41,.16);}
+.node.working .tel{background:rgba(0,0,0,.3);border-color:rgba(240,180,41,.18);color:var(--au-dim);}
+.node.working .node-st{background:rgba(240,180,41,.16);color:var(--au-edge);}
+.node.working .bp{border-color:rgba(240,180,41,.2);color:var(--au-dim);}
 
-/* chat panel */
-#chat-panel{flex:1;display:none;flex-direction:column;min-height:0;}
-#chat-panel.show{display:flex;}
-#cu-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:7px;}
-#cu-msgs::-webkit-scrollbar{width:3px;}
-#cu-msgs::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-.cu-msg{padding:8px 10px;border-radius:7px;font-size:12px;line-height:1.55;max-width:96%;}
-.cu-msg.user{background:var(--cu-dim);border:1px solid var(--cu-border);align-self:flex-end;}
-.cu-msg.agent{background:var(--card);border:1px solid var(--border);align-self:flex-start;}
-.cu-msg.sys{background:rgba(240,180,41,.05);border:1px solid rgba(240,180,41,.12);color:var(--muted);font-size:10px;font-style:italic;align-self:center;max-width:85%;}
-.msg-role{font-size:8px;font-weight:700;letter-spacing:1.5px;margin-bottom:4px;opacity:.55;}
-.cu-composer-wrap{border-top:1px solid var(--border);padding:10px;}
-.cu-composer-wrap textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:'Inter',sans-serif;padding:8px 10px;resize:none;outline:none;min-height:52px;transition:.15s;}
-.cu-composer-wrap textarea:focus{border-color:var(--cu);}
-.cu-compose-bar{display:flex;align-items:center;gap:8px;margin-top:6px;}
-.cu-send{background:var(--cu);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:10px;font-weight:700;cursor:pointer;margin-left:auto;transition:.15s;}
-.cu-send:hover{background:#6366f1;}
+/* STATE: CERTIFIED — jade, VELVET-stamped */
+.node.certified{background:var(--jd-surface);border-color:var(--jd-edge);
+                border-top-color:var(--jd-bevel);border-bottom-color:var(--jd-floor);}
+.node.certified .node-nm{color:var(--jd-text);}
+.node.certified .node-rl,.node.certified .node-md{color:var(--jd-dim);}
+.node.certified .node-task{color:var(--jd-text);}
+.node.certified .node-hd{border-bottom-color:rgba(16,185,129,.16);}
+.node.certified .tel{background:rgba(0,0,0,.3);border-color:rgba(16,185,129,.18);color:var(--jd-dim);}
+.node.certified .node-st{background:rgba(16,185,129,.16);color:var(--jd-edge);}
+.node.certified .bp{border-color:rgba(16,185,129,.2);color:var(--jd-dim);}
 
-/* preview panel */
-#preview-panel{flex:1;display:none;flex-direction:column;}
-#preview-panel.show{display:flex;}
-.preview-bar{padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:10px;color:var(--muted);flex-shrink:0;}
-.preview-url{flex:1;background:var(--card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text);outline:none;}
-.preview-go{background:var(--card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;color:var(--text);transition:.15s;}
-.preview-go:hover{border-color:var(--cu);color:var(--cu);}
-#preview-frame{flex:1;border:none;background:#fff;}
-.preview-placeholder{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--muted);}
-.preview-placeholder .pi{font-size:36px;opacity:.3;}
+/* STATE: ESCALATED — red, 3-error breach */
+.node.escalated{background:var(--rd-surface);border-color:var(--rd-edge);
+                border-top-color:var(--rd-bevel);border-bottom-color:var(--rd-floor);}
+.node.escalated .node-nm{color:var(--rd-text);}
+.node.escalated .node-rl,.node.escalated .node-md{color:var(--rd-dim);}
+.node.escalated .node-task{color:var(--rd-text);}
+.node.escalated .node-hd{border-bottom-color:rgba(239,68,68,.16);}
+.node.escalated .tel{background:rgba(0,0,0,.3);border-color:rgba(239,68,68,.18);color:var(--rd-dim);}
+.node.escalated .node-st{background:rgba(239,68,68,.16);color:var(--rd-edge);}
+.node.escalated .bp{border-color:rgba(239,68,68,.2);color:var(--rd-dim);}
 
-/* work orders panel */
-#wo-panel{flex:1;overflow-y:auto;padding:12px;display:none;}
-#wo-panel.show{display:block;}
-.wo-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
-.wo-card-head{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
-.wo-id{font-size:9px;font-weight:700;letter-spacing:1.5px;font-family:'JetBrains Mono',monospace;color:var(--cu);}
-.wo-agent-name{font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;}
-.wo-status-dot{width:6px;height:6px;border-radius:50%;margin-left:auto;flex-shrink:0;}
-.wo-label{font-size:12px;font-weight:600;margin-bottom:3px;}
-.wo-meta{font-size:10px;color:var(--muted);}
+/* ── VELVET QC DRAWER — hangs below her card, never overlaps downstream ─── */
+#velvet-drawer{position:absolute;width:212px;border:1px solid var(--edge);border-radius:5px;
+  background:var(--surface);overflow:hidden;transition:border-color .18s;}
+#velvet-drawer.certified{border-color:rgba(16,185,129,.4);background:var(--jd-surface);}
+#velvet-drawer.working{border-color:rgba(240,180,41,.4);background:var(--au-surface);}
+#velvet-drawer.escalated{border-color:rgba(239,68,68,.4);background:var(--rd-surface);}
+.dr-hd{display:flex;align-items:center;gap:6px;padding:6px 9px;cursor:pointer;
+       border-bottom:1px solid rgba(255,255,255,.05);}
+.dr-t{font-family:var(--mono);font-size:8.5px;letter-spacing:1.6px;color:var(--text-2);flex:1;}
+.dr-caret{font-size:9px;color:var(--text-dim);transition:transform .18s;}
+.dr-caret.shut{transform:rotate(-90deg);}
+.dr-bd{padding:4px 0;}
+.dr-bd.shut{display:none;}
+.gate{display:flex;align-items:center;gap:7px;padding:4.5px 10px;font-size:9.5px;}
+.gate-nm{font-family:var(--mono);font-size:8.5px;letter-spacing:.9px;color:var(--text-2);flex:1;}
+.gate-vd{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:1px;
+         padding:1.5px 6px;border-radius:2px;}
+.gv-pass{background:rgba(16,185,129,.14);color:var(--jd-edge);}
+.gv-clear{background:rgba(16,185,129,.14);color:var(--jd-edge);}
+.gv-fail{background:rgba(239,68,68,.14);color:var(--rd-edge);}
+.gv-blocked{background:rgba(255,255,255,.05);color:var(--text-dim);}
+.gv-wait{background:rgba(240,180,41,.14);color:var(--au-edge);}
+/* N/A — nothing to run. Never dressed as a pass. */
+.gv-na{background:rgba(255,255,255,.04);color:var(--text-faint);
+       border:1px dashed rgba(255,255,255,.13);}
+.dr-ft{padding:5px 10px;border-top:1px solid rgba(255,255,255,.05);
+       font-family:var(--mono);font-size:8px;color:var(--text-dim);letter-spacing:.6px;}
 
-/* meter panel */
-#meter-panel{flex:1;overflow-y:auto;padding:12px;display:none;}
-#meter-panel.show{display:block;}
-.m-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:11px;}
-.m-row:last-child{border:none;}
-.m-val{font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--cu);}
-.m-agent-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:11px;}
-.m-agent-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
-.m-agent-model{font-size:9px;color:var(--muted);margin-left:auto;font-family:'JetBrains Mono',monospace;}
+/* ── dispatch bar ───────────────────────────────────────────────────────── */
+#dispatch{position:absolute;bottom:44px;left:10px;right:10px;display:flex;align-items:center;
+  gap:6px;background:rgba(13,13,16,.94);border:1px solid var(--edge);border-radius:4px;
+  padding:6px 9px;z-index:18;}
+.dp-lbl{font-family:var(--mono);font-size:8px;letter-spacing:1.6px;color:var(--text-dim);flex-shrink:0;}
+#dispatch select,#dispatch input{background:var(--void);border:1px solid var(--edge);
+  border-radius:3px;color:var(--text-2);font-family:var(--mono);font-size:9px;
+  padding:4px 7px;outline:none;transition:.12s;}
+#dispatch select:focus,#dispatch input:focus{border-color:var(--au-edge);color:var(--text);}
+#dp-agent{width:96px;flex-shrink:0;}
+#dp-wo{width:64px;flex-shrink:0;}
+#dp-verify{flex:1;min-width:80px;}
+.dp-go{background:var(--surface);border:1px solid var(--edge);border-radius:3px;
+  padding:4px 10px;font-family:var(--mono);font-size:8.5px;font-weight:700;letter-spacing:1.1px;
+  color:var(--text-dim);cursor:pointer;flex-shrink:0;transition:.12s;}
+.dp-go:hover{color:var(--text);border-color:var(--text-dim);}
+.dp-go.au{color:var(--au-edge);border-color:rgba(240,180,41,.35);background:rgba(240,180,41,.07);}
+.dp-go.au:hover{background:rgba(240,180,41,.14);}
+
+/* certified stamp on a node */
+.node-stamp{font-family:var(--mono);font-size:7.5px;letter-spacing:.7px;color:var(--jd-dim);
+  margin-top:5px;display:none;}
+.node.certified .node-stamp{display:block;}
+
+/* ── legend ─────────────────────────────────────────────────────────────── */
+#legend{position:absolute;bottom:10px;left:10px;display:flex;gap:12px;
+        background:rgba(13,13,16,.9);border:1px solid var(--edge);border-radius:4px;
+        padding:6px 11px;z-index:15;}
+.lg{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8px;
+    letter-spacing:1px;color:var(--text-dim);}
+.lg i{width:7px;height:7px;border-radius:1px;display:block;}
+
+/* ── RIGHT PANE ─────────────────────────────────────────────────────────── */
+#right-pane{flex:1 1 42%;min-width:380px;display:flex;flex-direction:column;
+            background:var(--chrome);border-left:1px solid var(--edge);overflow:hidden;}
+
+/* progress rail */
+#rail-wrap{padding:11px 14px 9px;border-bottom:1px solid var(--edge);flex-shrink:0;}
+.rail-top{display:flex;align-items:baseline;gap:8px;margin-bottom:9px;}
+.rail-lbl{font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--text-dim);}
+.rail-pct{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--jd-edge);
+          margin-left:auto;}
+#rail{position:relative;height:2px;background:var(--grid);border-radius:1px;}
+#rail-fill{position:absolute;left:0;top:0;height:2px;background:var(--jd-edge);
+           border-radius:1px;transition:width .5s;}
+#waypoints{display:flex;justify-content:space-between;margin-top:8px;}
+.wp{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;}
+.wp i{width:7px;height:7px;border-radius:50%;background:var(--grid);
+      border:1px solid var(--edge);display:block;transition:.25s;}
+.wp.done i{background:var(--jd-edge);border-color:var(--jd-edge);}
+.wp.now i{background:var(--au-edge);border-color:var(--au-edge);}
+.wp span{font-family:var(--mono);font-size:7.5px;letter-spacing:.9px;color:var(--text-faint);}
+.wp.done span{color:var(--jd-dim);}
+.wp.now span{color:var(--au-edge);}
+
+/* station tabs */
+.tabs{display:flex;border-bottom:1px solid var(--edge);flex-shrink:0;}
+.tab{padding:7px 13px;font-family:var(--mono);font-size:9px;letter-spacing:1.5px;
+     color:var(--text-dim);cursor:pointer;border-bottom:1px solid transparent;
+     margin-bottom:-1px;transition:.12s;}
+.tab:hover{color:var(--text-2);}
+.tab.on{color:var(--au-edge);border-bottom-color:var(--au-edge);}
+.tabs .tab-sp{margin-left:auto;display:flex;align-items:center;padding-right:10px;gap:6px;}
+
+/* upper station */
+#station{flex:1 1 58%;min-height:120px;display:flex;flex-direction:column;overflow:hidden;
+         background:#070d18;}
+#hsplit{height:1px;background:var(--edge);cursor:row-resize;flex-shrink:0;transition:.12s;}
+#hsplit:hover{background:var(--au-edge);}
+
+/* IDE */
+#ide-view{flex:1;display:flex;overflow:hidden;}
+#ide-tree{width:132px;border-right:1px solid var(--gutter);overflow-y:auto;flex-shrink:0;
+          padding:5px 0;background:#060b14;}
+.tr-i{padding:2.5px 9px;font-family:var(--mono);font-size:9px;color:var(--slate);
+      cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:.1s;}
+.tr-i:hover{color:var(--text-2);background:rgba(255,255,255,.03);}
+.tr-i.on{color:var(--au-edge);background:rgba(240,180,41,.07);}
+#ide-code{flex:1;overflow:auto;font-family:var(--mono);font-size:10.5px;line-height:1.6;}
+#ide-code::-webkit-scrollbar,#ide-tree::-webkit-scrollbar{width:6px;height:6px;}
+#ide-code::-webkit-scrollbar-thumb,#ide-tree::-webkit-scrollbar-thumb{background:var(--gutter);border-radius:3px;}
+table.code{border-collapse:collapse;width:100%;}
+table.code td{padding:0;vertical-align:top;}
+td.ln{width:38px;text-align:right;padding-right:10px;color:#334966;user-select:none;
+      font-variant-numeric:tabular-nums;border-right:1px solid var(--gutter);}
+td.src{padding-left:11px;white-space:pre;color:#c8d4e3;}
+.k{color:var(--au-edge);} .s{color:var(--blue);} .c{color:var(--slate);font-style:italic;}
+.n{color:#c084fc;} .f{color:#7dd3fc;} .d{color:#facc15;}
+
+/* DevUI */
+#devui-view{flex:1;overflow-y:auto;padding:11px 13px;display:none;background:var(--void);}
+.dv-hd{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.dv-t{font-family:var(--mono);font-size:9px;letter-spacing:1.8px;color:var(--text-2);}
+.span-row{border-left:1px solid var(--gutter);padding:4px 0 4px 10px;margin-left:4px;position:relative;}
+.span-row::before{content:'';position:absolute;left:-3px;top:10px;width:5px;height:5px;
+  border-radius:50%;background:var(--jd-edge);}
+.span-row.fail::before{background:var(--rd-edge);}
+.span-row.wait::before{background:var(--au-edge);}
+.span-nm{font-family:var(--mono);font-size:9.5px;color:var(--text);}
+.span-mt{font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:2px;}
+
+/* handoff */
+#handoff-view{flex:1;overflow-y:auto;padding:11px 13px;display:none;background:var(--void);}
+#handoff-pre{font-family:var(--mono);font-size:9.5px;line-height:1.55;color:var(--text-2);
+             white-space:pre-wrap;}
+
+/* lower station: preview */
+#preview{flex:1 1 42%;min-height:100px;display:flex;flex-direction:column;overflow:hidden;
+         background:var(--chrome);}
+.pv-bar{display:flex;align-items:center;gap:7px;padding:5px 10px;border-bottom:1px solid var(--edge);
+        flex-shrink:0;}
+.pv-url{flex:1;background:var(--void);border:1px solid var(--edge);border-radius:3px;
+        padding:3.5px 8px;font-family:var(--mono);font-size:9.5px;color:var(--text-2);outline:none;}
+.pv-url:focus{border-color:var(--au-edge);}
+.pv-btn{background:var(--surface);border:1px solid var(--edge);border-radius:3px;
+        padding:3.5px 8px;font-family:var(--mono);font-size:9px;color:var(--text-dim);
+        cursor:pointer;transition:.12s;}
+.pv-btn:hover{color:var(--au-edge);border-color:var(--au-edge);}
+#pv-frame{flex:1;border:none;background:#fff;}
 </style>
 </head>
 <body>
 
-<!-- TOPBAR -->
-<div id="topbar">
-  <span class="tb-brand">⚙ CU DEPT</span>
-  <div style="width:1px;height:20px;background:var(--border)"></div>
-  <nav class="top-nav">
+<div id="chrome">
+  <span class="ch-title"><b>CRANE-CU</b> STUDIO</span>
+  <nav class="ch-nav">
     <a href="/ide">Home</a>
+    <a href="/cu" class="on">CU Dept</a>
+    <a href="/board">Board</a>
     <a href="/studio">Studio</a>
-    <a href="/images">Images</a>
-    <a href="/cu" class="active">CU Dept</a>
   </nav>
-  <div class="tb-right">
-    <span class="chip" id="cuChip">READY</span>
-    <span style="font-size:10px;color:var(--muted)" id="cuRunCount">0 runs</span>
+  <div class="ch-right">
+    <span class="pill" id="p-gpu">GPU OFF</span>
+    <span class="pill au" id="p-work">0 WORKING</span>
+    <span class="pill jd" id="p-cert">0 CERTIFIED</span>
+    <span class="pill rd" id="p-esc" style="display:none">0 ESCALATED</span>
   </div>
 </div>
 
-<!-- WORKSPACE -->
-<div id="workspace">
+<div id="split">
 
-  <!-- CANVAS -->
-  <div id="canvas-wrap">
-    <div class="grid-bg"></div>
-    <svg id="edge-svg"></svg>
+  <!-- ══ CANVAS ══ -->
+  <div id="canvas-pane">
+    <div id="grid"></div>
+    <div id="canvas-title">AGENTIC WORKFLOW ORCHESTRATOR</div>
+    <svg id="edges"></svg>
 
-    <!-- CANVAS TOOLBAR -->
-    <div id="canvas-toolbar">
-      <div class="ct-btn" onclick="resetLayout()">⊞ Reset</div>
-      <div class="ct-btn" id="animBtn" onclick="toggleAnim()">◎ Animate</div>
+    <div id="tools">
+      <div class="tool" onclick="resetLayout()">RESET</div>
+      <div class="tool on" id="t-flow" onclick="toggleFlow()">FLOW</div>
+      <div class="tool" onclick="demoCycle()">DEMO CYCLE</div>
+      <div class="tool" onclick="resetAll()">CLEAR STATES</div>
     </div>
 
-    <!-- A-TEAM NODES -->
-    <div class="a-node" id="node-hannibal" data-agent="hannibal"
-         style="left:30px;top:80px;background:rgba(240,180,41,.07);border-color:rgba(240,180,41,.3);color:var(--han)">
-      <div class="an-head">
-        <span class="an-icon">♟</span>
-        <div class="an-titles">
-          <div class="an-name">Hannibal</div>
-          <div class="an-role">Supervisor & Dispatcher</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen2.5-Coder-7B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'hannibal','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'hannibal','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-hannibal">READY</span>
-      </div>
-    </div>
-
-    <div class="a-node" id="node-murdock" data-agent="murdock"
-         style="left:30px;top:240px;background:rgba(56,189,248,.07);border-color:rgba(56,189,248,.3);color:var(--mur)">
-      <div class="an-head">
-        <span class="an-icon">⚙</span>
-        <div class="an-titles">
-          <div class="an-name">Murdock</div>
-          <div class="an-role">Architecture Specialist</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen3-Coder-30B (GPU)</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'murdock','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'murdock','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-murdock">READY</span>
-      </div>
-    </div>
-
-    <div class="a-node" id="node-face" data-agent="face"
-         style="left:30px;top:400px;background:rgba(46,230,184,.07);border-color:rgba(46,230,184,.3);color:var(--fac)">
-      <div class="an-head">
-        <span class="an-icon">◱</span>
-        <div class="an-titles">
-          <div class="an-name">Face</div>
-          <div class="an-role">Frontend Virtuoso</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen2.5-Coder-7B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'face','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'face','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-face">READY</span>
-      </div>
-    </div>
-
-    <div class="a-node" id="node-ba" data-agent="ba"
-         style="left:30px;top:540px;background:rgba(167,139,250,.07);border-color:rgba(167,139,250,.3);color:var(--ba)">
-      <div class="an-head">
-        <span class="an-icon">⬡</span>
-        <div class="an-titles">
-          <div class="an-name">B.A.</div>
-          <div class="an-role">Execution Engine</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen2.5-Coder-3B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'ba','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'ba','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-ba">READY</span>
-      </div>
-    </div>
-
-    <!-- ESCALATION NODE (far right) -->
-    <div class="a-node" id="node-astra" data-agent="astra"
-         style="left:500px;top:240px;width:200px;background:rgba(239,68,68,.07);border-color:rgba(239,68,68,.3);color:var(--ast)">
-      <div class="an-head">
-        <span class="an-icon">✦</span>
-        <div class="an-titles">
-          <div class="an-name">Astra</div>
-          <div class="an-role">Escalation Doctor</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Gemini 3.8 / Qwen3-30B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'astra','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'astra','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-standby" id="st-astra">STANDBY</span>
-      </div>
-    </div>
-
-    <!-- VELVET QC NODE -->
-    <div class="a-node" id="node-velvet-qc" data-agent="velvet-qc"
-         style="left:270px;top:240px;width:190px;background:rgba(6,182,212,.07);border-color:rgba(6,182,212,.3);color:#06b6d4">
-      <div class="an-head">
-        <span class="an-icon">◉</span>
-        <div class="an-titles">
-          <div class="an-name">VELVET</div>
-          <div class="an-role">QC → Hannibal</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen2.5-Coder-3B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'velvet-qc','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'velvet-qc','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-velvet-qc">READY</span>
-      </div>
-    </div>
-
-    <!-- VELVET TRACK NODE -->
-    <div class="a-node" id="node-velvet-track" data-agent="velvet-track"
-         style="left:270px;top:420px;width:190px;background:rgba(16,185,129,.07);border-color:rgba(16,185,129,.3);color:#10b981">
-      <div class="an-head">
-        <span class="an-icon">◈</span>
-        <div class="an-titles">
-          <div class="an-name">VELVET-TRACK</div>
-          <div class="an-role">Project Board Manager</div>
-        </div>
-      </div>
-      <div class="an-body">
-        <div class="an-model">Qwen2.5-Coder-1.5B</div>
-        <div class="an-brains">
-          <span class="brain-pill b1" onclick="openBrain(event,'velvet-track','b1')">Brain 1</span>
-          <span class="brain-pill b2" onclick="openBrain(event,'velvet-track','b2')">Brain 2 ✎</span>
-        </div>
-        <span class="an-status st-ready" id="st-velvet-track">READY</span>
-      </div>
-    </div>
-
-    <!-- RUN LAUNCHER BAR -->
-    <div id="run-bar">
-      <textarea id="runPrompt" placeholder="Describe what to build… Hannibal slices it into work orders" rows="1"></textarea>
-      <select class="run-mode" id="runMode">
-        <option value="plan">Plan</option>
-        <option value="auto" selected>Auto</option>
-        <option value="superman">Superman</option>
+    <!-- DISPATCH BAR — assign real work to a node -->
+    <div id="dispatch">
+      <span class="dp-lbl">DISPATCH</span>
+      <select id="dp-agent">
+        <option value="murdock">MURDOCK</option>
+        <option value="face">FACE</option>
+        <option value="ba">B.A.</option>
+        <option value="hannibal">HANNIBAL</option>
+        <option value="astra">ASTRA</option>
       </select>
-      <button class="run-fire" onclick="launchRun()">▶ Launch</button>
-      <span id="run-wo-label" class="run-wo-label"></span>
+      <input id="dp-wo" placeholder="WO-01" value="WO-01"/>
+      <input id="dp-verify" placeholder="verify command (exit 0 = pass)"
+             value="curl -sf -o /dev/null http://127.0.0.1:8000/ide"/>
+      <button class="dp-go au" onclick="dispatchAssign()">ASSIGN →</button>
+      <button class="dp-go" onclick="dispatchComplete()">CLAIM DONE</button>
     </div>
-  </div><!-- /canvas-wrap -->
 
-  <!-- RIGHT PANEL -->
-  <div id="right-panel">
+    <!-- nodes injected here -->
 
-    <!-- Agent header -->
-    <div id="rp-agent-head">
-      <span class="rp-agent-icon" id="rpIcon">♟</span>
-      <div class="rp-agent-info">
-        <div class="rp-agent-name" id="rpName">Hannibal</div>
-        <div class="rp-agent-role" id="rpRole">Supervisor & Tactical Dispatcher</div>
-        <div class="rp-agent-model" id="rpModel">Qwen2.5-Coder-7B</div>
+    <div id="legend">
+      <span class="lg"><i style="background:var(--edge)"></i>IDLE</span>
+      <span class="lg"><i style="background:var(--au-edge)"></i>WORKING</span>
+      <span class="lg"><i style="background:var(--jd-edge)"></i>CERTIFIED</span>
+      <span class="lg"><i style="background:var(--rd-edge)"></i>ESCALATED</span>
+    </div>
+  </div>
+
+  <div id="vsplit"></div>
+
+  <!-- ══ RIGHT ══ -->
+  <div id="right-pane">
+
+    <div id="rail-wrap">
+      <div class="rail-top">
+        <span class="rail-lbl">PROGRESS METER</span>
+        <span class="rail-pct" id="rail-pct">0%</span>
       </div>
-      <span class="an-status st-ready" id="rpStatus" style="margin-left:auto;flex-shrink:0">READY</span>
-    </div>
-
-    <!-- Tabs -->
-    <div class="rp-tabs">
-      <div class="rp-tab active" id="tab-b1"       onclick="switchTab('b1')">BRAIN 1</div>
-      <div class="rp-tab"        id="tab-b2"       onclick="switchTab('b2')">BRAIN 2</div>
-      <div class="rp-tab"        id="tab-chat"     onclick="switchTab('chat')">CHAT</div>
-      <div class="rp-tab"        id="tab-preview"  onclick="switchTab('preview')">PREVIEW</div>
-      <div class="rp-tab"        id="tab-wo"       onclick="switchTab('wo')">ORDERS</div>
-      <div class="rp-tab"        id="tab-meter"    onclick="switchTab('meter')">METER</div>
-    </div>
-
-    <!-- Brain 1 panel (read-only) -->
-    <div class="brain-panel show" id="panel-b1">
-      <div class="bp-label">BRAIN 1 — AGENT EXPERTISE (READ-ONLY)</div>
-      <div class="bp-text" id="b1-text">Select an agent node to inspect Brain 1.</div>
-    </div>
-
-    <!-- Brain 2 panel (editable) -->
-    <div class="brain-panel" id="panel-b2">
-      <div class="bp-label">BRAIN 2 — PROJECT SKILLS (LIVE EDITABLE)</div>
-      <div class="bp-text" id="b2-text" style="color:var(--muted);font-size:10px">Current project skills injected into this agent.</div>
-      <textarea class="bp-edit" id="b2-edit" placeholder="Paste project-specific skills, conventions, or failure modes for this agent…"></textarea>
-      <div style="display:flex;align-items:center">
-        <button class="bp-save-btn" onclick="saveBrain2()">Save Brain 2</button>
-        <span class="bp-saved" id="b2-saved">✓ Saved</span>
+      <div id="rail"><div id="rail-fill" style="width:0%"></div></div>
+      <div id="waypoints">
+        <div class="wp" id="wp-spec"><i></i><span>SPEC</span></div>
+        <div class="wp" id="wp-assign"><i></i><span>ASSIGNED</span></div>
+        <div class="wp" id="wp-build"><i></i><span>BUILDING</span></div>
+        <div class="wp" id="wp-qc"><i></i><span>QC GATE</span></div>
+        <div class="wp" id="wp-cert"><i></i><span>CERTIFIED</span></div>
       </div>
     </div>
 
-    <!-- Chat panel -->
-    <div id="chat-panel">
-      <div id="cu-msgs"></div>
-      <div class="cu-composer-wrap">
-        <textarea id="cuInput" placeholder="Ask this agent…" rows="2"
-          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();cuSend();}"></textarea>
-        <div class="cu-compose-bar">
-          <span style="font-size:10px;color:var(--muted)" id="chatAgentLabel">→ Hannibal</span>
-          <button class="cu-send" onclick="cuSend()">Send ▸</button>
-        </div>
+    <div class="tabs">
+      <div class="tab on" id="tb-ide"     onclick="station('ide')">CRANE IDE</div>
+      <div class="tab"    id="tb-devui"   onclick="station('devui')">DEVUI</div>
+      <div class="tab"    id="tb-handoff" onclick="station('handoff')">HANDOFF.DOC</div>
+      <div class="tab-sp"><span class="pill" id="p-devui">:8080</span></div>
+    </div>
+
+    <div id="station">
+      <div id="ide-view">
+        <div id="ide-tree"></div>
+        <div id="ide-code"></div>
       </div>
+      <div id="devui-view"></div>
+      <div id="handoff-view"><pre id="handoff-pre">Loading handoff.doc…</pre></div>
     </div>
 
-    <!-- Preview panel -->
-    <div id="preview-panel">
-      <div class="preview-bar">
-        <input class="preview-url" id="previewUrl" value="http://127.0.0.1:8000/ide" placeholder="Enter URL to preview…"/>
-        <button class="preview-go" onclick="loadPreview()">Go</button>
-        <button class="preview-go" onclick="reloadPreview()">↺</button>
+    <div id="hsplit"></div>
+
+    <div id="preview">
+      <div class="pv-bar">
+        <span class="rail-lbl">LIVE PREVIEW</span>
+        <input class="pv-url" id="pv-url" value="http://127.0.0.1:8000/ide"/>
+        <button class="pv-btn" onclick="loadPv()">GO</button>
+        <button class="pv-btn" onclick="reloadPv()">↺</button>
       </div>
-      <iframe id="preview-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+      <iframe id="pv-frame" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
     </div>
 
-    <!-- Work Orders panel -->
-    <div id="wo-panel">
-      <div id="woList">
-        <div style="color:var(--muted);font-size:11px;text-align:center;padding:40px 0">No active run. Launch a run from the canvas.</div>
-      </div>
-    </div>
-
-    <!-- Meter panel -->
-    <div id="meter-panel">
-      <div class="m-row"><span>Active Runs</span><span class="m-val" id="mActive">0</span></div>
-      <div class="m-row"><span>Total Runs</span><span class="m-val" id="mTotal">0</span></div>
-      <div style="margin:12px 0 6px;font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted)">A-TEAM STATUS</div>
-      <div id="mAgentList"></div>
-    </div>
-
-  </div><!-- /right-panel -->
-</div><!-- /workspace -->
+  </div>
+</div>
 
 <script>
-// ── AGENT DATA (mirrors backend) ──────────────────────────────────────────
-const AGENTS = {
-  hannibal:{ name:'Hannibal', role:'Supervisor & Tactical Dispatcher', model:'Qwen2.5-Coder-7B', icon:'♟', color:'var(--han)', status:'ready' },
-  murdock: { name:'Murdock',  role:'Logic & Architecture Specialist',  model:'Qwen3-Coder-30B', icon:'⚙',  color:'var(--mur)', status:'ready' },
-  face:    { name:'Face',     role:'UI/UX & Frontend Virtuoso',        model:'Qwen2.5-Coder-7B', icon:'◱', color:'var(--fac)', status:'ready' },
-  ba:      { name:'B.A.',     role:'Device & Execution Engine',        model:'Qwen2.5-Coder-3B', icon:'⬡', color:'var(--ba)',  status:'ready' },
-    astra:   { name:'Astra',        role:'Escalation Doctor',                model:'Gemini 3.8 / Qwen3-30B', icon:'✦', color:'var(--ast)', status:'standby' },
-  'velvet-track':{ name:'VELVET-TRACK', role:'Project Board Manager',         model:'Qwen2.5-Coder-1.5B',     icon:'◈', color:'#10b981',    status:'ready'   },
-  'velvet-qc':   { name:'VELVET',       role:'QC Specialist → Hannibal',      model:'Qwen2.5-Coder-3B',       icon:'◉', color:'#06b6d4',    status:'ready'   },
+// ══ ROSTER ═══════════════════════════════════════════════════════════════
+const ROSTER = {
+  hannibal:{ nm:'HANNIBAL',  rl:'Supervisor · Dispatcher',   gl:'♟', x:300, y:34  },
+  'velvet-qc':{ nm:'VELVET', rl:'QC · Test Assertion Gate',  gl:'◉', x:626, y:34  },
+  murdock: { nm:'MURDOCK',   rl:'System Logic & Architecture',gl:'⚙', x:38,  y:238 },
+  face:    { nm:'FACE',      rl:'UI/UX Frontend Engineer',   gl:'◱', x:300, y:238 },
+  ba:      { nm:'B.A.',      rl:'Execution · Terminal · Sudo',gl:'⬡', x:38,  y:452 },
+  astra:   { nm:'ASTRA',     rl:'Escalation · Computer Use', gl:'✦', x:300, y:452 },
 };
-
-// ── STATE ─────────────────────────────────────────────────────────────────
-let _agent = 'hannibal';
-let _tab = 'b1';
-let _animOn = true;
-let _brain2Cache = {};
-let _runs = [];
-
-// ── EDGES ─────────────────────────────────────────────────────────────────
-const EDGES = [
-  {from:'node-hannibal', to:'node-murdock', color:'rgba(240,180,41,.35)'},
-  {from:'node-hannibal', to:'node-face',    color:'rgba(240,180,41,.35)'},
-  {from:'node-hannibal', to:'node-ba',      color:'rgba(240,180,41,.35)'},
-  // Workers → VELVET QC (all dept outputs route through QC)
-  {from:'node-murdock',  to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
-  {from:'node-face',     to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
-  {from:'node-ba',       to:'node-velvet-qc', color:'rgba(6,182,212,.3)'},
-  // VELVET QC → Hannibal (pass confirmation)
-  {from:'node-velvet-qc',to:'node-hannibal',  color:'rgba(6,182,212,.4)', dash:true},
-  // VELVET QC → Astra (3-error escalation)
-  {from:'node-velvet-qc',to:'node-astra',     color:'rgba(239,68,68,.35)',dash:true},
-  {from:'node-astra',    to:'node-hannibal',  color:'rgba(239,68,68,.25)',dash:true},
-  // VELVET TRACK (board manager, separate lane)
-  {from:'node-hannibal', to:'node-velvet-track', color:'rgba(16,185,129,.25)'},
+const WIRES = [
+  ['hannibal','murdock'],['hannibal','face'],['hannibal','ba'],
+  ['murdock','velvet-qc',1],['face','velvet-qc',1],['ba','velvet-qc',1],
+  ['velvet-qc','hannibal',1],['velvet-qc','astra',1],['astra','hannibal',1],
 ];
-function nodeCtr(id){ const e=document.getElementById(id); return e?{x:e.offsetLeft+e.offsetWidth/2,y:e.offsetTop+e.offsetHeight/2}:{x:0,y:0}; }
-function drawEdges(){
-  const svg=document.getElementById('edge-svg'); svg.innerHTML='';
-  EDGES.forEach(e=>{
-    const a=nodeCtr(e.from),b=nodeCtr(e.to);
-    const mx=a.x+20;
-    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
-    p.setAttribute('d',`M${a.x},${a.y} C${mx+80},${a.y} ${b.x-80},${b.y} ${b.x},${b.y}`);
-    p.setAttribute('stroke',e.color); p.classList.add('edge');
-    if(e.dash&&_animOn) p.classList.add('edge-dash');
-    svg.appendChild(p);
-  });
-}
-window.addEventListener('resize',drawEdges);
-setTimeout(drawEdges,120);
+const GATES = ['SPEC VALIDATION','LINT COMPLIANCE','TEST GATEKEEPER','SECURITY AUDIT'];
 
-// ── NODE DRAG ─────────────────────────────────────────────────────────────
-function makeDraggable(el){
-  let ox,oy,sl,st,drag=false;
-  el.addEventListener('mousedown',e=>{
-    if(e.target.tagName==='SPAN'&&e.target.classList.contains('brain-pill'))return;
-    drag=true; ox=e.clientX; oy=e.clientY; sl=el.offsetLeft; st=el.offsetTop; e.preventDefault();
-  });
-  document.addEventListener('mousemove',e=>{ if(!drag)return; el.style.left=(sl+e.clientX-ox)+'px'; el.style.top=(st+e.clientY-oy)+'px'; drawEdges(); });
-  document.addEventListener('mouseup',()=>{ drag=false; });
-}
-document.querySelectorAll('.a-node').forEach(n=>{ makeDraggable(n); n.addEventListener('click',()=>selectAgent(n.dataset.agent)); });
+let _flow=true, _sel=null, _states={}, _lastQC=null;
 
-// ── AGENT SELECT ──────────────────────────────────────────────────────────
-async function selectAgent(key){
-  _agent=key;
-  const a=AGENTS[key];
-  document.querySelectorAll('.a-node').forEach(n=>n.classList.toggle('selected',n.dataset.agent===key));
-  document.getElementById('rpIcon').textContent=a.icon;
-  document.getElementById('rpName').textContent=a.name;
-  document.getElementById('rpRole').textContent=a.role;
-  document.getElementById('rpModel').textContent=a.model;
-  const stEl=document.getElementById('rpStatus');
-  stEl.textContent=a.status.toUpperCase();
-  stEl.className='an-status '+(a.status==='ready'?'st-ready':a.status==='standby'?'st-standby':'st-running');
-  document.getElementById('chatAgentLabel').textContent='→ '+a.name;
-  document.getElementById('chatAgentLabel').style.color=a.color;
-  // fetch Brain 1 + Brain 2
-  try{
-    const r=await fetch('/api/cu/agents'); const d=await r.json();
-    const ag=d.agents[key];
-    if(ag){
-      document.getElementById('b1-text').textContent=ag.brain1_preview;
-      const b2=ag.brain2||'';
-      document.getElementById('b2-text').textContent=b2||'(no project skills injected yet)';
-      document.getElementById('b2-edit').value=b2;
-      _brain2Cache[key]=b2;
-    }
-  }catch(e){}
-}
-
-// ── BRAIN PILL QUICK-OPEN ─────────────────────────────────────────────────
-function openBrain(ev,key,brain){
-  ev.stopPropagation();
-  selectAgent(key);
-  switchTab(brain);
-}
-
-// ── BRAIN 2 SAVE ──────────────────────────────────────────────────────────
-async function saveBrain2(){
-  const skill=document.getElementById('b2-edit').value.trim();
-  try{
-    await fetch('/api/cu/brain2',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({agent:_agent,skill})});
-    document.getElementById('b2-text').textContent=skill||'(empty)';
-    _brain2Cache[_agent]=skill;
-    const saved=document.getElementById('b2-saved');
-    saved.style.opacity='1'; setTimeout(()=>saved.style.opacity='0',2000);
-  }catch(e){}
-}
-
-// ── TABS ──────────────────────────────────────────────────────────────────
-const TAB_PANELS={b1:'panel-b1',b2:'panel-b2',chat:'chat-panel',preview:'preview-panel',wo:'wo-panel',meter:'meter-panel'};
-function switchTab(tab){
-  _tab=tab;
-  Object.keys(TAB_PANELS).forEach(k=>{
-    document.getElementById('tab-'+k).classList.toggle('active',k===tab);
-    const p=document.getElementById(TAB_PANELS[k]);
-    const isFlex=(k==='chat'||k==='preview');
-    p.className=p.className.replace(' show','').replace('show','').trim();
-    if(k===tab) p.classList.add('show');
-    if(isFlex) p.style.display=(k===tab?'flex':'none');
-    else if(k!=='chat'&&k!=='preview') p.style.display=(k===tab?'block':'none');
-  });
-  if(tab==='meter') refreshMeter();
-  if(tab==='b1'||tab==='b2') selectAgent(_agent);
-}
-// Fix initial display states
-Object.entries(TAB_PANELS).forEach(([k,id])=>{
-  const el=document.getElementById(id);
-  const isFlex=(k==='chat'||k==='preview');
-  if(isFlex) el.style.display='none';
-  else { el.style.display='none'; el.classList.remove('show'); }
-});
-document.getElementById('panel-b1').style.display='block';
-document.getElementById('panel-b1').classList.add('show');
-
-// ── CHAT ──────────────────────────────────────────────────────────────────
-function appendMsg(role,text,agent){
-  const box=document.getElementById('cu-msgs');
-  const d=document.createElement('div'); d.className='cu-msg '+role;
-  if(role!=='sys'){
-    const r=document.createElement('div'); r.className='msg-role';
-    r.textContent=role==='user'?'YOU':(agent||_agent).toUpperCase()+' AGENT';
-    d.appendChild(r);
-  }
-  const t=document.createElement('div'); t.textContent=text; d.appendChild(t);
-  box.appendChild(d); box.scrollTop=box.scrollHeight;
-}
-async function cuSend(){
-  const inp=document.getElementById('cuInput'); const msg=inp.value.trim(); if(!msg)return;
-  inp.value=''; appendMsg('user',msg);
-  try{
-    const r=await fetch('/api/cu/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:msg,agent:_agent})});
-    const d=await r.json();
-    if(d.error){appendMsg('sys','⚠ '+d.error);return;}
-    appendMsg('agent',d.content||'(no response)',d.agent_name);
-  }catch(e){appendMsg('sys','⚠ '+e.message);}
-}
-
-// ── PREVIEW ───────────────────────────────────────────────────────────────
-function loadPreview(){
-  const url=document.getElementById('previewUrl').value.trim();
-  if(url) document.getElementById('preview-frame').src=url;
-}
-function reloadPreview(){ document.getElementById('preview-frame').src=document.getElementById('preview-frame').src; }
-
-// ── RUN LAUNCHER ──────────────────────────────────────────────────────────
-async function launchRun(){
-  const prompt=document.getElementById('runPrompt').value.trim(); if(!prompt)return;
-  document.getElementById('run-wo-label').textContent='Slicing…';
-  try{
-    const r=await fetch('/api/cu/run',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({prompt,mode:document.getElementById('runMode').value})});
-    const d=await r.json();
-    _runs.unshift(d);
-    document.getElementById('run-wo-label').textContent=d.work_orders.length+' WOs dispatched';
-    renderWOs(d.work_orders); pulseAgents(d.work_orders);
-    switchTab('wo');
-    appendMsg('sys',`Run launched → ${d.work_orders.length} work orders`);
-  }catch(e){document.getElementById('run-wo-label').textContent='⚠ error';}
-}
-function renderWOs(wos){
-  const list=document.getElementById('woList'); list.innerHTML='';
-  wos.forEach(wo=>{
-    const a=AGENTS[wo.agent]||{}; const c=a.color||'var(--cu)';
-    const card=document.createElement('div'); card.className='wo-card';
-    card.innerHTML=`<div class="wo-card-head">
-      <span class="wo-id">${wo.id}</span>
-      <span class="wo-agent-name" style="background:${c}22;color:${c}">${wo.agent_name||wo.agent}</span>
-      <span class="wo-status-dot" style="background:var(--orange)"></span>
+// ══ BUILD NODES ══════════════════════════════════════════════════════════
+const pane=document.getElementById('canvas-pane');
+Object.entries(ROSTER).forEach(([k,r])=>{
+  const n=document.createElement('div');
+  n.className='node idle'; n.id='n-'+k; n.dataset.agent=k;
+  n.style.left=r.x+'px'; n.style.top=r.y+'px';
+  n.innerHTML=`
+    <div class="node-hd">
+      <span class="node-gl">${r.gl}</span>
+      <div class="node-id">
+        <div class="node-nm">${r.nm}</div>
+        <div class="node-rl">${r.rl}</div>
+      </div>
     </div>
-    <div class="wo-label">${wo.label}</div>
-    <div class="wo-meta">Status: ${wo.status}</div>`;
-    list.appendChild(card);
+    <div class="node-bd">
+      <div class="node-md" id="md-${k}">—</div>
+      <div class="node-task" id="tk-${k}"><span class="dot"></span><span>Idle</span></div>
+      <div class="node-tel" id="tl-${k}"></div>
+      <span class="node-st" id="st-${k}">IDLE</span>
+      <div class="node-stamp" id="sp-${k}"></div>
+      <div class="node-brains">
+        <span class="bp" onclick="brain(event,'${k}',1)">B1</span>
+        <span class="bp" onclick="brain(event,'${k}',2)">B2</span>
+      </div>
+    </div>`;
+  pane.appendChild(n);
+  drag(n);
+  n.addEventListener('click',()=>select(k));
+});
+
+// VELVET's drawer — anchored under her card with clearance
+const dr=document.createElement('div');
+dr.id='velvet-drawer';
+dr.style.left=(ROSTER['velvet-qc'].x-8)+'px';
+dr.style.top=(ROSTER['velvet-qc'].y+152)+'px';
+dr.innerHTML=`
+  <div class="dr-hd" onclick="toggleDrawer()">
+    <span class="dr-caret" id="dr-caret">▾</span>
+    <span class="dr-t">VELVET QC REPORT</span>
+    <span class="gate-vd gv-blocked" id="dr-verdict">IDLE</span>
+  </div>
+  <div class="dr-bd" id="dr-body">
+    ${GATES.map((g,i)=>`<div class="gate">
+      <span class="gate-nm">${g}</span>
+      <span class="gate-vd gv-blocked" id="gt-${i}">—</span>
+    </div>`).join('')}
+  </div>
+  <div class="dr-ft" id="dr-foot">awaiting agent completion</div>`;
+pane.appendChild(dr);
+drag(dr);
+
+// ══ WIRES ════════════════════════════════════════════════════════════════
+function ctr(id){const e=document.getElementById(id);
+  return e?{x:e.offsetLeft+e.offsetWidth/2,y:e.offsetTop+e.offsetHeight/2}:{x:0,y:0};}
+function drawWires(){
+  const svg=document.getElementById('edges'); svg.innerHTML='';
+  WIRES.forEach(([a,b,dash])=>{
+    const p1=ctr('n-'+a), p2=ctr('n-'+b);
+    const sa=(_states[a]||{}).state, sb=(_states[b]||{}).state;
+    let col='rgba(255,255,255,.09)';
+    if(sa==='CERTIFIED'&&sb==='CERTIFIED') col='rgba(16,185,129,.3)';
+    else if(sa==='ESCALATED'||sb==='ESCALATED') col='rgba(239,68,68,.28)';
+    else if(sa==='WORKING'||sb==='WORKING') col='rgba(240,180,41,.26)';
+    const mid=(p1.y+p2.y)/2;
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d',`M${p1.x},${p1.y} C${p1.x},${mid} ${p2.x},${mid} ${p2.x},${p2.y}`);
+    path.setAttribute('stroke',col); path.classList.add('wire');
+    if(dash&&_flow) path.classList.add('flow');
+    svg.appendChild(path);
   });
 }
-function pulseAgents(wos){
-  wos.forEach((wo,i)=>{
-    const el=document.getElementById('node-'+wo.agent);
-    const st=document.getElementById('st-'+wo.agent);
-    if(!el||!st)return;
-    setTimeout(()=>{
-      st.className='an-status st-running'; st.textContent='RUNNING';
-      setTimeout(()=>{ st.className='an-status st-ready'; st.textContent='READY'; },3000);
-    },i*350);
+addEventListener('resize',drawWires);
+
+// ══ DRAG ═════════════════════════════════════════════════════════════════
+function drag(el){
+  let ox,oy,sl,st,on=false;
+  el.addEventListener('mousedown',e=>{
+    if(e.target.classList.contains('bp')||e.target.closest('.dr-hd'))return;
+    on=true; ox=e.clientX; oy=e.clientY; sl=el.offsetLeft; st=el.offsetTop; e.preventDefault();
   });
+  addEventListener('mousemove',e=>{ if(!on)return;
+    el.style.left=Math.max(4,sl+e.clientX-ox)+'px';
+    el.style.top=Math.max(4,st+e.clientY-oy)+'px'; drawWires(); });
+  addEventListener('mouseup',()=>on=false);
 }
 
-// ── METER ─────────────────────────────────────────────────────────────────
-async function refreshMeter(){
+// ══ STATE RENDER ═════════════════════════════════════════════════════════
+const CLS={IDLE:'idle',WORKING:'working',CERTIFIED:'certified',ESCALATED:'escalated'};
+const TASK={IDLE:'Idle',WORKING:'Executing work order',CERTIFIED:'Certified complete',
+            ESCALATED:'3-error threshold breached'};
+
+function fmtDur(s){ if(!s)return'0s';
+  const m=Math.floor(s/60),r=s%60; return m?`${m}m ${r}s`:`${r}s`; }
+
+async function poll(){
   try{
-    const r=await fetch('/api/cu/status'); const d=await r.json();
-    document.getElementById('mActive').textContent=d.active_runs;
-    document.getElementById('mTotal').textContent=d.total_runs;
-    const chip=document.getElementById('cuChip');
-    chip.textContent=d.active_runs>0?'RUNNING':'READY';
-    chip.className='chip'+(d.active_runs>0?' live':'');
-    document.getElementById('cuRunCount').textContent=d.total_runs+' run'+(d.total_runs!==1?'s':'');
-    const al=document.getElementById('mAgentList'); al.innerHTML='';
-    Object.entries(d.agents).forEach(([k,v])=>{
-      const row=document.createElement('div'); row.className='m-agent-row';
-      row.innerHTML=`<span class="m-agent-dot" style="background:${v.color}"></span>
-        <span>${v.name}</span>
-        <span class="m-agent-model">${v.model}</span>
-        <span class="an-status ${v.status==='ready'?'st-ready':'st-standby'}" style="margin-left:8px;font-size:8px">${v.status.toUpperCase()}</span>`;
-      al.appendChild(row);
+    const r=await fetch('/api/cu/agent/states'); const d=await r.json();
+    _states=d.agents;
+    Object.keys(ROSTER).forEach(k=>{
+      const a=_states[k]; if(!a)return;
+      const n=document.getElementById('n-'+k);
+      n.className='node '+(CLS[a.state]||'idle')+(_sel===k?' sel':'');
+      document.getElementById('st-'+k).textContent=a.state;
+      document.getElementById('md-'+k).textContent=a.model+(a.tier==='gpu'?' ⚡GPU':'');
+      const tk=document.getElementById('tk-'+k);
+      let label=TASK[a.state]||a.state;
+      if(a.state==='WORKING'&&a.attempts>0) label='VELVET TESTING…';
+      tk.querySelector('span:last-child').textContent=label;
+      const tel=document.getElementById('tl-'+k); tel.innerHTML='';
+      if(a.work_order) tel.innerHTML+=`<span class="tel">${a.work_order}</span>`;
+      if(a.elapsed_seconds) tel.innerHTML+=`<span class="tel">${fmtDur(a.elapsed_seconds)}</span>`;
+      if(a.attempts) tel.innerHTML+=`<span class="tel">ATT ${a.attempts}/3</span>`;
+      if(a.qc&&a.qc.completion!=null) tel.innerHTML+=`<span class="tel">${Math.round(a.qc.completion*100)}%</span>`;
+      // VELVET's certification stamp — only present once she has signed off
+      const sp=document.getElementById('sp-'+k);
+      if(a.state==='CERTIFIED'&&a.certified_at){
+        sp.textContent=`✓ VELVET CERTIFIED ${new Date(a.certified_at*1000)
+          .toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`
+          +` · ${fmtDur(a.build_seconds||0)}`;
+      } else sp.textContent='';
+    });
+    // chrome pills
+    document.getElementById('p-gpu').textContent=d.gpu_on?'GPU LIVE':'GPU OFF';
+    document.getElementById('p-gpu').className='pill'+(d.gpu_on?' au':'');
+    document.getElementById('p-work').textContent=d.counts.working+' WORKING';
+    document.getElementById('p-cert').textContent=d.counts.certified+' CERTIFIED';
+    const esc=document.getElementById('p-esc');
+    esc.style.display=d.counts.escalated?'inline-block':'none';
+    esc.textContent=d.counts.escalated+' ESCALATED';
+    updateRail(d.counts);
+    renderDrawer();
+    drawWires();
+  }catch(e){}
+}
+
+function updateRail(c){
+  const workers=['hannibal','murdock','face','ba','astra'];
+  const total=workers.length;
+  const pct=Math.round((c.certified?Math.min(c.certified,total):0)/total*100);
+  document.getElementById('rail-pct').textContent=pct+'%';
+  document.getElementById('rail-fill').style.width=pct+'%';
+  const anyWork=c.working>0, anyCert=c.certified>0;
+  const wp=(id,s)=>{const e=document.getElementById(id);e.className='wp'+(s?' '+s:'');};
+  wp('wp-spec','done');
+  wp('wp-assign',anyWork||anyCert?'done':'');
+  wp('wp-build',anyWork?'now':(anyCert?'done':''));
+  wp('wp-qc',_lastQC?'done':(anyWork?'now':''));
+  wp('wp-cert',pct===100?'done':(anyCert?'now':''));
+}
+
+function renderDrawer(){
+  const v=_states['velvet-qc']||{};
+  const qc=_lastQC;
+  dr.className=qc?(qc.verdict==='PASS'?'certified':(qc.escalated?'escalated':'working')):'';
+  const vd=document.getElementById('dr-verdict');
+  if(!qc){ vd.textContent='IDLE'; vd.className='gate-vd gv-blocked';
+    GATES.forEach((_,i)=>{const g=document.getElementById('gt-'+i);
+      g.textContent='—'; g.className='gate-vd gv-blocked';});
+    document.getElementById('dr-foot').textContent='awaiting agent completion'; return; }
+  vd.textContent=qc.verdict;
+  vd.className='gate-vd '+(qc.verdict==='PASS'?'gv-pass':qc.verdict==='FAIL'?'gv-fail':'gv-blocked');
+  GATES.forEach((name,i)=>{
+    const found=(qc.gates||[]).find(g=>g.gate===name);
+    const el=document.getElementById('gt-'+i);
+    const s=found?found.state:'—';
+    el.textContent=s;
+    el.className='gate-vd '+({PASS:'gv-pass',CLEAR:'gv-clear',FAIL:'gv-fail',
+                              BLOCKED:'gv-blocked','N/A':'gv-na'}[s]||'gv-blocked');
+  });
+  document.getElementById('dr-foot').textContent=
+    `${qc.agent} · ${fmtDur(qc.build_seconds||0)} build · ${Math.round((qc.completion||0)*100)}% spec`;
+}
+
+function toggleDrawer(){
+  document.getElementById('dr-body').classList.toggle('shut');
+  document.getElementById('dr-caret').classList.toggle('shut');
+}
+
+function select(k){ _sel=k; poll(); }
+function brain(e,k,n){ e.stopPropagation(); select(k);
+  alert(`${ROSTER[k].nm} — Brain ${n}\n\nEdit at /cu Brain panel (Board → agent).`); }
+
+function toggleFlow(){ _flow=!_flow;
+  document.getElementById('t-flow').classList.toggle('on',_flow); drawWires(); }
+
+function resetLayout(){
+  Object.entries(ROSTER).forEach(([k,r])=>{
+    const n=document.getElementById('n-'+k); n.style.left=r.x+'px'; n.style.top=r.y+'px';});
+  dr.style.left=(ROSTER['velvet-qc'].x-8)+'px';
+  dr.style.top=(ROSTER['velvet-qc'].y+152)+'px';
+  drawWires();
+}
+
+async function resetAll(){
+  await fetch('/api/cu/agent/reset',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({agent:''})});
+  _lastQC=null; poll();
+}
+
+// ══ DISPATCH — assign real work, then claim done and let VELVET adjudicate ═
+function dpVals(){
+  return {agent:document.getElementById('dp-agent').value,
+          wo:document.getElementById('dp-wo').value.trim()||'WO-adhoc',
+          verify:document.getElementById('dp-verify').value.trim()};
+}
+async function dispatchAssign(){
+  const {agent,wo}=dpVals();
+  await fetch('/api/cu/agent/assign',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({agent,work_order:wo})});
+  poll();
+}
+async function dispatchComplete(){
+  const {agent,wo,verify}=dpVals();
+  const deliverables = verify
+    ? [{id:'D-01',statement:'Dispatch assertion',weight:3,verify_cmd:verify}] : [];
+  const r=await fetch('/api/cu/agent/complete',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({agent,work_order:wo,deliverables,files:['/home/hunt/velvet_runner.py']})});
+  const d=await r.json();
+  _lastQC={agent,verdict:d.verdict,gates:d.gates,completion:d.completion,
+           build_seconds:d.build_seconds,escalated:d.node_state==='ESCALATED'};
+  poll(); loadHandoff();
+}
+
+// ══ DEMO CYCLE — assign → complete → VELVET certifies ════════════════════
+async function demoCycle(){
+  const seq=['murdock','face','ba'];
+  for(const a of seq){
+    await fetch('/api/cu/agent/assign',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({agent:a,work_order:'WO-'+(seq.indexOf(a)+1).toString().padStart(2,'0')})});
+    await poll(); await sleep(900);
+  }
+  for(const a of seq){
+    const r=await fetch('/api/cu/agent/complete',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({agent:a,work_order:'WO-'+(seq.indexOf(a)+1).toString().padStart(2,'0'),
+        deliverables:[{id:'D-01',statement:'IDE reachable',weight:3,
+          verify_cmd:'curl -sf -o /dev/null http://127.0.0.1:8000/ide'}],
+        files:['/home/hunt/velvet_runner.py']})});
+    const d=await r.json();
+    _lastQC={agent:a,verdict:d.verdict,gates:d.gates,completion:d.completion,
+             build_seconds:d.build_seconds,escalated:d.node_state==='ESCALATED'};
+    await poll(); loadHandoff(); await sleep(1100);
+  }
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// ══ STATION TABS ═════════════════════════════════════════════════════════
+function station(which){
+  ['ide','devui','handoff'].forEach(t=>{
+    document.getElementById('tb-'+t).classList.toggle('on',t===which);
+    const v=document.getElementById(t+'-view');
+    v.style.display = t===which ? (t==='ide'?'flex':'block') : 'none';
+  });
+  if(which==='devui') loadDevUI();
+  if(which==='handoff') loadHandoff();
+}
+
+// ══ IDE ══════════════════════════════════════════════════════════════════
+const FILES=['/home/hunt/app.py','/home/hunt/velvet_runner.py','/home/hunt/vault.py',
+             '/home/hunt/voice_engine.py','/home/hunt/harvester.py','/home/hunt/CLAUDE.md'];
+const PY_KW=/\b(def|class|return|import|from|if|elif|else|for|while|try|except|finally|with|as|and|or|not|in|is|None|True|False|async|await|lambda|yield|raise|pass|break|continue|global)\b/g;
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function hl(line){
+  let h=esc(line);
+  h=h.replace(/(#.*)$/,'<span class="c">$1</span>');
+  h=h.replace(/(\x22\x22\x22[\s\S]*?\x22\x22\x22|\x27\x27\x27[\s\S]*?\x27\x27\x27|\x22(?:[^\x22\\]|\\.)*\x22|\x27(?:[^\x27\\]|\\.)*\x27)/g,'<span class="s">$1</span>');
+  h=h.replace(/(@[\w.]+)/g,'<span class="d">$1</span>');
+  h=h.replace(PY_KW,'<span class="k">$&</span>');
+  h=h.replace(/\b(\d+\.?\d*)\b/g,'<span class="n">$1</span>');
+  return h;
+}
+function renderTree(active){
+  const t=document.getElementById('ide-tree'); t.innerHTML='';
+  FILES.forEach(f=>{
+    const d=document.createElement('div');
+    d.className='tr-i'+(f===active?' on':'');
+    d.textContent=f.split('/').pop();
+    d.onclick=()=>openFile(f);
+    t.appendChild(d);
+  });
+}
+async function openFile(path){
+  renderTree(path);
+  try{
+    const r=await fetch(`/api/cu/file?path=${encodeURIComponent(path)}&start=1&lines=200`);
+    const d=await r.json();
+    const code=document.getElementById('ide-code');
+    if(d.error){ code.innerHTML=`<div style="padding:12px;color:var(--rd-text);font-size:10px">${d.error}</div>`; return; }
+    const rows=d.content.split('\n').map((l,i)=>
+      `<tr><td class="ln">${d.start+i}</td><td class="src">${hl(l)||' '}</td></tr>`).join('');
+    code.innerHTML=`<table class="code">${rows}</table>`;
+  }catch(e){}
+}
+
+// ══ DEVUI ════════════════════════════════════════════════════════════════
+async function loadDevUI(){
+  const v=document.getElementById('devui-view');
+  let head='';
+  try{
+    const r=await fetch('/api/cu/devui/status'); const d=await r.json();
+    document.getElementById('p-devui').textContent=d.reachable?':8080 LIVE':':8080 DOWN';
+    document.getElementById('p-devui').className='pill'+(d.reachable?' jd':'');
+    head=`<div class="dv-hd"><span class="dv-t">MAF DEVUI · OPENTELEMETRY</span>
+      <span class="pill ${d.reachable?'jd':''}">${d.reachable?'CONNECTED':'NOT REACHABLE'}</span></div>
+      ${d.reachable?'':`<div style="font-family:var(--mono);font-size:9px;color:var(--text-dim);
+        margin-bottom:12px;line-height:1.6">MAF DevUI is not running on :8080.
+        Showing local CRANE trace spans below.<br>Start it with:
+        <span style="color:var(--au-edge)">pip install agent-framework-devui &amp;&amp; devui --port 8080</span></div>`}`;
+  }catch(e){}
+  // local spans from QC log
+  let spans='';
+  try{
+    const r=await fetch('/api/cu/qc/recent'); const d=await r.json();
+    if(!d.runs.length) spans='<div style="font-family:var(--mono);font-size:9px;color:var(--text-faint)">no spans recorded</div>';
+    d.runs.slice().reverse().forEach(run=>{
+      const cls=run.verdict==='PASS'?'':run.verdict==='FAIL'?'fail':'wait';
+      spans+=`<div class="span-row ${cls}">
+        <div class="span-nm">${run.agent} · ${run.work_order||'wo'} · <span style="color:${
+          run.verdict==='PASS'?'var(--jd-edge)':run.verdict==='FAIL'?'var(--rd-edge)':'var(--au-edge)'
+        }">${run.verdict}</span></div>
+        <div class="span-mt">${new Date(run.ts*1000).toLocaleTimeString()} · ${run.duration_ms}ms ·
+          ${Math.round((run.completion||0)*100)}% spec · attempt ${run.attempts}</div>
+        ${(run.gates||[]).map(g=>`<div class="span-mt" style="padding-left:8px">↳ ${g.gate}: ${g.state}</div>`).join('')}
+      </div>`;
     });
   }catch(e){}
+  v.innerHTML=head+spans;
 }
 
-// ── CANVAS UTILS ──────────────────────────────────────────────────────────
-const DEFAULTS={
-  'node-hannibal':     {left:'30px', top:'80px'},
-  'node-murdock':      {left:'30px', top:'240px'},
-  'node-face':         {left:'30px', top:'400px'},
-  'node-ba':           {left:'30px', top:'540px'},
-  'node-velvet-qc':    {left:'270px',top:'240px'},
-  'node-velvet-track': {left:'270px',top:'420px'},
-  'node-astra':        {left:'500px',top:'240px'},
-};
-function resetLayout(){ Object.entries(DEFAULTS).forEach(([id,p])=>{ const e=document.getElementById(id); if(e){e.style.left=p.left;e.style.top=p.top;} }); drawEdges(); }
-function toggleAnim(){
-  _animOn=!_animOn;
-  const btn=document.getElementById('animBtn');
-  btn.classList.toggle('active',_animOn);
-  drawEdges();
+// ══ HANDOFF ══════════════════════════════════════════════════════════════
+async function loadHandoff(){
+  try{
+    const r=await fetch('/api/cu/handoff'); const d=await r.json();
+    document.getElementById('handoff-pre').textContent=d.content;
+  }catch(e){}
 }
 
-// ── INIT ──────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded',()=>{
-  selectAgent('hannibal');
-  refreshMeter();
-  setInterval(refreshMeter,8000);
-  drawEdges();
-  document.getElementById('animBtn').classList.add('active');
+// ══ PREVIEW ══════════════════════════════════════════════════════════════
+function loadPv(){ document.getElementById('pv-frame').src=document.getElementById('pv-url').value.trim(); }
+function reloadPv(){ const f=document.getElementById('pv-frame'); f.src=f.src; }
+
+// ══ SPLITTERS ════════════════════════════════════════════════════════════
+(function(){
+  const v=document.getElementById('vsplit'), cp=document.getElementById('canvas-pane');
+  let on=false;
+  v.addEventListener('mousedown',e=>{on=true;e.preventDefault();document.body.style.cursor='col-resize';});
+  addEventListener('mousemove',e=>{ if(!on)return;
+    const pct=(e.clientX/window.innerWidth)*100;
+    if(pct>26&&pct<80){ cp.style.flex=`1 1 ${pct}%`; drawWires(); }});
+  addEventListener('mouseup',()=>{on=false;document.body.style.cursor='';});
+  const h=document.getElementById('hsplit'), st=document.getElementById('station');
+  let hon=false;
+  h.addEventListener('mousedown',e=>{hon=true;e.preventDefault();document.body.style.cursor='row-resize';});
+  addEventListener('mousemove',e=>{ if(!hon)return;
+    const rp=document.getElementById('right-pane').getBoundingClientRect();
+    const pct=((e.clientY-rp.top)/rp.height)*100;
+    if(pct>22&&pct<86) st.style.flex=`1 1 ${pct}%`; });
+  addEventListener('mouseup',()=>{hon=false;document.body.style.cursor='';});
+})();
+
+// ══ INIT ═════════════════════════════════════════════════════════════════
+addEventListener('DOMContentLoaded',()=>{
+  openFile('/home/hunt/velvet_runner.py');
+  loadPv();
+  loadHandoff();
+  loadDevUI();
+  poll();
+  setInterval(poll,4000);
+  setTimeout(drawWires,150);
 });
 </script>
 </body>
 </html>
 """)
-
 # ══════════════════════════════════════════════════════════════════════════════
 # NEXUS — Project Board Agent (CONNIE Co-Engineer)
 # Two agents: VELVET-TRACK (1.5B, always-on) + VELVET-QC (3B, quality control)
@@ -8593,8 +8939,10 @@ async def velvet_qc_run(pid: str, req: NexusQCRunRequest):
             results.append({"id": d["id"], "state": "BLOCKED", "reason": "no verify_cmd"})
             continue
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30,
-                               cwd="/home/hunt")
+            # Off the event loop — a verify command may curl this app.
+            r = await _in_thread(
+                subprocess.run, cmd, shell=True, capture_output=True, text=True,
+                timeout=30, cwd="/home/hunt")
             evidence = (r.stdout + r.stderr).strip()
             state = "PASS" if r.returncode == 0 else "FAIL"
             d["state"] = state
