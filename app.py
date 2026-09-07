@@ -8161,3 +8161,1222 @@ window.addEventListener('DOMContentLoaded',()=>{
 </body>
 </html>
 """)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NEXUS — Project Board Agent (CONNIE Co-Engineer)
+# Two agents: VELVET-TRACK (1.5B, always-on) + VELVET-QC (3B, quality control)
+# Lifecycle: INIT → SPEC → ACTIVE → QC-CHECK → THRESHOLD → CLOSE → HANDOFF
+# ══════════════════════════════════════════════════════════════════════════════
+
+import hashlib as _hashlib
+import shutil as _shutil
+
+# ── Disk paths ────────────────────────────────────────────────────────────────
+VELVET_PROJECTS_DIR = os.path.expanduser("~/.crane/projects")
+VELVET_BOARD_FILE   = os.path.expanduser("~/.crane/board.json")
+HANDOFFS_VAULT     = "/mnt/NOBILITY_VAULT/handoffs"
+os.makedirs(VELVET_PROJECTS_DIR, exist_ok=True)
+
+# ── Board I/O ─────────────────────────────────────────────────────────────────
+def _board_load() -> dict:
+    if os.path.exists(VELVET_BOARD_FILE):
+        try:
+            with open(VELVET_BOARD_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"projects": {}}
+
+def _board_save(board: dict):
+    with open(VELVET_BOARD_FILE, "w") as f:
+        json.dump(board, f, indent=2)
+
+# ── Project helpers ───────────────────────────────────────────────────────────
+def _proj_dir(pid: str) -> str:
+    return os.path.join(VELVET_PROJECTS_DIR, pid)
+
+def _proj_load(pid: str) -> dict:
+    p = os.path.join(_proj_dir(pid), "project.json")
+    if os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    return {}
+
+def _proj_save(pid: str, data: dict):
+    d = _proj_dir(pid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "project.json"), "w") as f:
+        json.dump(data, f, indent=2)
+
+def _build_log_append(pid: str, event: dict):
+    d = _proj_dir(pid)
+    os.makedirs(d, exist_ok=True)
+    event["ts"] = time.time()
+    with open(os.path.join(d, "build_log.jsonl"), "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+def _build_log_read(pid: str) -> list:
+    p = os.path.join(_proj_dir(pid), "build_log.jsonl")
+    if not os.path.exists(p):
+        return []
+    events = []
+    with open(p) as f:
+        for line in f:
+            try:
+                events.append(json.loads(line.strip()))
+            except Exception:
+                pass
+    return events
+
+def _spec_freeze(pid: str, spec: dict) -> str:
+    raw = json.dumps(spec, sort_keys=True).encode()
+    sha = _hashlib.sha256(raw).hexdigest()[:16]
+    d = _proj_dir(pid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "spec.yaml"), "w") as f:
+        f.write(f"# spec_sha: {sha}\n")
+        for k, v in spec.items():
+            f.write(f"{k}: {json.dumps(v)}\n")
+    return sha
+
+def _compute_completion(deliverables: list) -> float:
+    total = sum(d.get("weight", 1) for d in deliverables)
+    if total == 0:
+        return 0.0
+    passing = sum(d.get("weight", 1) for d in deliverables if d.get("state") == "PASS")
+    return round(passing / total, 4)
+
+def _gate_closeable(deliverables: list, completion_gate: float = 0.90) -> dict:
+    completion = _compute_completion(deliverables)
+    must_haves = [d for d in deliverables if d.get("weight", 1) == 3]
+    failing_musts = [d for d in must_haves if d.get("state") != "PASS"]
+    closeable = completion >= completion_gate and len(failing_musts) == 0
+    return {
+        "closeable": closeable,
+        "completion": completion,
+        "gate": completion_gate,
+        "failing_musts": [d["id"] for d in failing_musts],
+        "verdict": "CLOSE" if closeable else ("ESCALATE" if len(failing_musts) > 0 else "CONTINUE"),
+    }
+
+def _write_handoff_md(pid: str, project: dict, section: str = "open"):
+    d = _proj_dir(pid)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "HANDOFF.md")
+    if section == "open":
+        lines = [
+            f"# HANDOFF — {project.get('name', pid)}",
+            f"",
+            f"**Project ID:** `{pid}`  ",
+            f"**Goal:** {project.get('goal', '—')}  ",
+            f"**Started:** {time.strftime('%Y-%m-%d %H:%M CST', time.localtime(project.get('created_at', time.time())))}  ",
+            f"**Assigned Agents:** {', '.join(project.get('agents', []))}  ",
+            f"**GitHub Repo:** {project.get('github_repo', '(not yet created)')}  ",
+            f"**Status:** {project.get('status', 'INIT')}  ",
+            f"",
+            f"## Spec Objectives",
+            f"",
+        ]
+        for d_item in project.get("deliverables", []):
+            lines.append(f"- [ ] **{d_item['id']}** (weight {d_item.get('weight',1)}): {d_item['statement']}")
+        lines += ["", "## Build Log", "", "*(appended as work progresses)*", ""]
+    elif section == "close":
+        logs = _build_log_read(pid)
+        deliverables = project.get("deliverables", [])
+        gate = _gate_closeable(deliverables)
+        elapsed = project.get("closed_at", time.time()) - project.get("created_at", time.time())
+        elapsed_str = f"{int(elapsed//3600)}h {int((elapsed%3600)//60)}m {int(elapsed%60)}s"
+        agent_stats = {}
+        for ev in logs:
+            a = ev.get("actor", "unknown")
+            agent_stats.setdefault(a, {"actions": 0, "errors": 0, "escalations": 0})
+            agent_stats[a]["actions"] += 1
+            if ev.get("event_type") == "error":
+                agent_stats[a]["errors"] += 1
+            if ev.get("event_type") == "escalation":
+                agent_stats[a]["escalations"] += 1
+        with open(path) as existing:
+            existing_content = existing.read()
+        close_lines = [
+            existing_content,
+            "",
+            "---",
+            "",
+            "## Project Close Report",
+            "",
+            f"**Closed:** {time.strftime('%Y-%m-%d %H:%M CST', time.localtime(project.get('closed_at', time.time())))}  ",
+            f"**Elapsed:** {elapsed_str}  ",
+            f"**Final Completion:** {gate['completion']*100:.1f}%  ",
+            f"**Gate Result:** {gate['verdict']}  ",
+            "",
+            "### Deliverables QC Summary",
+            "",
+        ]
+        for d_item in deliverables:
+            state = d_item.get("state", "PENDING")
+            icon = "✅" if state == "PASS" else ("❌" if state == "FAIL" else "⏳")
+            close_lines.append(f"- {icon} **{d_item['id']}** (w{d_item.get('weight',1)}): {d_item['statement']} — `{state}`")
+            if d_item.get("evidence_preview"):
+                close_lines.append(f"  > Evidence: `{d_item['evidence_preview']}`")
+        close_lines += [
+            "",
+            "### Agent Performance",
+            "",
+        ]
+        for agent_key, stats in agent_stats.items():
+            close_lines.append(f"- **{agent_key}**: {stats['actions']} actions, {stats['errors']} errors, {stats['escalations']} escalations")
+        close_lines += [
+            "",
+            "### Lessons Learned",
+            "",
+            f"{project.get('lessons_learned', '*(VELVET-QC: no lessons recorded — update via POST /api/velvet/project/{pid}/lessons)*')}",
+            "",
+            "### Areas of Opportunity",
+            "",
+            f"{project.get('areas_of_opportunity', '*(not yet recorded)*')}",
+            "",
+            "### Agent Improvement Recommendations",
+            "",
+        ]
+        for rec in project.get("agent_improvements", []):
+            close_lines.append(f"- **{rec['agent']}**: {rec['recommendation']}")
+        if not project.get("agent_improvements"):
+            close_lines.append("*(none recorded)*")
+        close_lines += ["", "---", f"*Handoff generated by VELVET-QC · {time.strftime('%Y-%m-%d %H:%M')}*", ""]
+        lines = close_lines
+    else:
+        lines = []
+    with open(path, "w") as f:
+        f.write("\n".join(lines) if section == "open" else "\n".join(lines))
+    return path
+
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
+from pydantic import BaseModel as _BM
+
+class NexusInitRequest(_BM):
+    name: str
+    goal: str
+    agents: list = ["hannibal", "murdock", "face", "ba"]
+    deliverables: list = []   # [{id, statement, weight, verify_cmd}]
+    github_repo: str = ""
+    completion_gate: float = 0.90
+
+class NexusDeliverableUpdate(_BM):
+    project_id: str
+    deliverable_id: str
+    state: str          # PASS | FAIL | BLOCKED | PENDING
+    evidence: str = ""  # raw stdout/stderr bytes
+    actor: str = "velvet-qc"
+
+class NexusQCRunRequest(_BM):
+    project_id: str
+    deliverable_id: str = ""  # empty = run all pending
+
+class NexusCloseRequest(_BM):
+    project_id: str
+    lessons_learned: str = ""
+    areas_of_opportunity: str = ""
+    agent_improvements: list = []  # [{agent, recommendation}]
+
+class NexusLessonsRequest(_BM):
+    lessons_learned: str = ""
+    areas_of_opportunity: str = ""
+    agent_improvements: list = []
+
+class NexusGitHubRequest(_BM):
+    project_id: str
+    repo_name: str
+    private: bool = True
+    description: str = ""
+
+
+# ── NEXUS API ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/velvet/project/init")
+async def velvet_init(req: NexusInitRequest):
+    """Gate 1: INIT — open a project, write HANDOFF.md header."""
+    import time as _t
+    pid = f"proj_{int(_t.time()*1000)}"
+    now = _t.time()
+    deliverables = []
+    for i, d in enumerate(req.deliverables):
+        deliverables.append({
+            "id": d.get("id", f"D-{i+1:02d}"),
+            "statement": d.get("statement", ""),
+            "weight": d.get("weight", 2),
+            "verify_cmd": d.get("verify_cmd", ""),
+            "state": "PENDING",
+            "evidence": "",
+            "evidence_preview": "",
+            "attempts": 0,
+        })
+    project = {
+        "id": pid,
+        "name": req.name,
+        "goal": req.goal,
+        "agents": req.agents,
+        "deliverables": deliverables,
+        "github_repo": req.github_repo,
+        "completion_gate": req.completion_gate,
+        "status": "INIT",
+        "completion": 0.0,
+        "spec_sha": "",
+        "created_at": now,
+        "closed_at": None,
+        "lessons_learned": "",
+        "areas_of_opportunity": "",
+        "agent_improvements": [],
+    }
+    # Freeze spec
+    spec = {"name": req.name, "goal": req.goal, "deliverables": deliverables, "gate": req.completion_gate}
+    sha = _spec_freeze(pid, spec)
+    project["spec_sha"] = sha
+    project["status"] = "SPEC"
+    _proj_save(pid, project)
+    _build_log_append(pid, {"event_type": "spec_freeze", "actor": "velvet-track", "spec_sha": sha,
+                            "deliverable_count": len(deliverables)})
+    # Write opening HANDOFF.md
+    _write_handoff_md(pid, project, section="open")
+    # Update board
+    board = _board_load()
+    board["projects"][pid] = {
+        "id": pid, "name": req.name, "goal": req.goal,
+        "status": "SPEC", "completion": 0.0, "created_at": now,
+        "agents": req.agents, "github_repo": req.github_repo,
+    }
+    _board_save(board)
+    return {"ok": True, "project_id": pid, "spec_sha": sha, "project": project}
+
+
+@app.post("/api/velvet/project/{pid}/github")
+async def velvet_create_github(pid: str, req: NexusGitHubRequest):
+    """Create a GitHub repo for this project via gh CLI."""
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    repo_name = req.repo_name or project.get("name", pid).lower().replace(" ", "-")
+    desc = req.description or project.get("goal", "")[:100]
+    vis = "--private" if req.private else "--public"
+    try:
+        result = subprocess.run(
+            ["gh", "repo", "create", repo_name, vis, "--description", desc, "--confirm"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            repo_url = result.stdout.strip()
+            project["github_repo"] = repo_url
+            project["status"] = "ACTIVE"
+            _proj_save(pid, project)
+            _build_log_append(pid, {"event_type": "github_created", "actor": "velvet-track",
+                                    "repo": repo_url})
+            board = _board_load()
+            if pid in board["projects"]:
+                board["projects"][pid]["github_repo"] = repo_url
+                board["projects"][pid]["status"] = "ACTIVE"
+                _board_save(board)
+            return {"ok": True, "repo": repo_url}
+        else:
+            err = result.stderr.strip()
+            _build_log_append(pid, {"event_type": "error", "actor": "velvet-track",
+                                    "message": f"gh repo create failed: {err}"})
+            return {"ok": False, "error": err}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/velvet/project/{pid}/deliverable")
+async def velvet_update_deliverable(pid: str, req: NexusDeliverableUpdate):
+    """VELVET-QC records a deliverable result. Meter only moves here."""
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    updated = False
+    for d in project["deliverables"]:
+        if d["id"] == req.deliverable_id:
+            d["state"] = req.state
+            d["evidence"] = req.evidence
+            d["evidence_preview"] = req.evidence[:80] if req.evidence else ""
+            d["attempts"] = d.get("attempts", 0) + 1
+            updated = True
+            break
+    if not updated:
+        return {"error": f"Deliverable {req.deliverable_id} not found"}
+    project["completion"] = _compute_completion(project["deliverables"])
+    gate = _gate_closeable(project["deliverables"], project.get("completion_gate", 0.90))
+    if gate["closeable"]:
+        project["status"] = "THRESHOLD"
+    _proj_save(pid, project)
+    _build_log_append(pid, {
+        "event_type": "qc_check", "actor": req.actor,
+        "deliverable": req.deliverable_id, "state": req.state,
+        "completion": project["completion"], "gate_verdict": gate["verdict"],
+        "evidence_preview": req.evidence[:80] if req.evidence else "",
+    })
+    board = _board_load()
+    if pid in board["projects"]:
+        board["projects"][pid]["completion"] = project["completion"]
+        board["projects"][pid]["status"] = project["status"]
+        _board_save(board)
+    return {"ok": True, "completion": project["completion"], "gate": gate}
+
+
+@app.post("/api/velvet/project/{pid}/qc")
+async def velvet_qc_run(pid: str, req: NexusQCRunRequest):
+    """Run verify commands for pending deliverables. Evidence stored as raw bytes."""
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    results = []
+    targets = project["deliverables"]
+    if req.deliverable_id:
+        targets = [d for d in targets if d["id"] == req.deliverable_id]
+    for d in targets:
+        if d.get("state") == "PASS":
+            results.append({"id": d["id"], "state": "PASS", "skipped": True})
+            continue
+        cmd = d.get("verify_cmd", "").strip()
+        if not cmd:
+            results.append({"id": d["id"], "state": "BLOCKED", "reason": "no verify_cmd"})
+            continue
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30,
+                               cwd="/home/hunt")
+            evidence = (r.stdout + r.stderr).strip()
+            state = "PASS" if r.returncode == 0 else "FAIL"
+            d["state"] = state
+            d["evidence"] = evidence
+            d["evidence_preview"] = evidence[:80]
+            d["attempts"] = d.get("attempts", 0) + 1
+            results.append({"id": d["id"], "state": state, "exit_code": r.returncode,
+                            "evidence_preview": evidence[:80]})
+            _build_log_append(pid, {"event_type": "qc_check", "actor": "velvet-qc",
+                                    "deliverable": d["id"], "state": state,
+                                    "cmd": cmd, "exit_code": r.returncode,
+                                    "evidence": evidence[:200]})
+        except subprocess.TimeoutExpired:
+            d["state"] = "FAIL"
+            results.append({"id": d["id"], "state": "FAIL", "reason": "timeout"})
+        except Exception as e:
+            results.append({"id": d["id"], "state": "FAIL", "reason": str(e)})
+    project["completion"] = _compute_completion(project["deliverables"])
+    gate = _gate_closeable(project["deliverables"], project.get("completion_gate", 0.90))
+    if gate["closeable"]:
+        project["status"] = "THRESHOLD"
+    _proj_save(pid, project)
+    board = _board_load()
+    if pid in board["projects"]:
+        board["projects"][pid]["completion"] = project["completion"]
+        board["projects"][pid]["status"] = project["status"]
+        _board_save(board)
+    # GPU waste check
+    gpu_running = False
+    try:
+        gm = _meter_load()
+        gpu_running = gm.get("running", False)
+    except Exception:
+        pass
+    return {"ok": True, "results": results, "completion": project["completion"],
+            "gate": gate, "gpu_warning": gpu_running}
+
+
+@app.post("/api/velvet/project/{pid}/close")
+async def velvet_close(pid: str, req: NexusCloseRequest):
+    """Gate 6+7: CLOSE + HANDOFF — verify GPU off, write final HANDOFF.md."""
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    gate = _gate_closeable(project["deliverables"], project.get("completion_gate", 0.90))
+    if not gate["closeable"]:
+        return {"error": "Project not closeable", "gate": gate,
+                "message": f"Completion {gate['completion']*100:.1f}% — failing must-haves: {gate['failing_musts']}"}
+    # GPU waste prevention — hard stop before close
+    gpu_stopped = False
+    try:
+        gm = _meter_load()
+        if gm.get("running"):
+            await gpu_meter_stop(shutdown=True)
+            gpu_stopped = True
+            _build_log_append(pid, {"event_type": "gpu_auto_stop", "actor": "velvet-qc",
+                                    "message": "GPU stopped by VELVET before project close"})
+    except Exception:
+        pass
+    # Verify GitHub is current
+    git_sha = ""
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                           cwd="/home/hunt", timeout=10)
+        git_sha = r.stdout.strip()
+    except Exception:
+        pass
+    now = time.time()
+    project.update({
+        "status": "CLOSED",
+        "closed_at": now,
+        "lessons_learned": req.lessons_learned,
+        "areas_of_opportunity": req.areas_of_opportunity,
+        "agent_improvements": req.agent_improvements,
+        "final_git_sha": git_sha,
+    })
+    _proj_save(pid, project)
+    _build_log_append(pid, {"event_type": "project_closed", "actor": "velvet-qc",
+                            "completion": gate["completion"], "git_sha": git_sha,
+                            "gpu_stopped": gpu_stopped})
+    # Write close section to HANDOFF.md
+    handoff_path = _write_handoff_md(pid, project, section="close")
+    # Archive to vault if mounted
+    try:
+        if os.path.ismount("/mnt/NOBILITY_VAULT") or os.path.isdir(HANDOFFS_VAULT):
+            os.makedirs(HANDOFFS_VAULT, exist_ok=True)
+            shutil.copy2(handoff_path, os.path.join(HANDOFFS_VAULT, f"{pid}_HANDOFF.md"))
+    except Exception:
+        pass
+    board = _board_load()
+    if pid in board["projects"]:
+        board["projects"][pid]["status"] = "CLOSED"
+        board["projects"][pid]["closed_at"] = now
+        board["projects"][pid]["completion"] = gate["completion"]
+        _board_save(board)
+    return {"ok": True, "project_id": pid, "completion": gate["completion"],
+            "handoff_path": handoff_path, "git_sha": git_sha, "gpu_stopped": gpu_stopped}
+
+
+@app.get("/api/velvet/board")
+async def velvet_board():
+    """Full project board — all projects with live completion."""
+    board = _board_load()
+    projects = []
+    for pid, summary in board.get("projects", {}).items():
+        detail = _proj_load(pid)
+        projects.append({**summary, **({"deliverable_count": len(detail.get("deliverables", []))} if detail else {})})
+    projects.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    return {"projects": projects, "total": len(projects)}
+
+
+@app.get("/api/velvet/project/{pid}")
+async def velvet_get_project(pid: str):
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    gate = _gate_closeable(project.get("deliverables", []), project.get("completion_gate", 0.90))
+    return {"project": project, "gate": gate}
+
+
+@app.get("/api/velvet/project/{pid}/log")
+async def velvet_build_log(pid: str):
+    logs = _build_log_read(pid)
+    return {"log": logs[-100:], "total": len(logs)}
+
+
+@app.post("/api/velvet/project/{pid}/lessons")
+async def velvet_lessons(pid: str, req: NexusLessonsRequest):
+    project = _proj_load(pid)
+    if not project:
+        return {"error": f"Project {pid} not found"}
+    project["lessons_learned"] = req.lessons_learned
+    project["areas_of_opportunity"] = req.areas_of_opportunity
+    project["agent_improvements"] = req.agent_improvements
+    _proj_save(pid, project)
+    return {"ok": True}
+
+
+@app.post("/api/velvet/project/{pid}/log/append")
+async def velvet_log_append(pid: str, event: dict):
+    _build_log_append(pid, event)
+    return {"ok": True}
+
+
+@app.get("/api/velvet/gpu/check")
+async def velvet_gpu_check():
+    """VELVET-QC GPU waste check — call before any close."""
+    try:
+        m = _meter_load()
+        st = _meter_state(m)
+        return {"running": st.get("running", False), "cost_accrued": st.get("session_cost", 0),
+                "idle_seconds": st.get("idle_seconds", 0), "warning": st.get("running", False)}
+    except Exception as e:
+        return {"running": False, "error": str(e)}
+
+
+# ── NEXUS agent brain ─────────────────────────────────────────────────────────
+VELVET_TRACK_BRAIN = (
+    "You are VELVET-TRACK, the project board manager for CRANE. "
+    "Your only job is to maintain accurate, real-time records of every project. "
+    "You create project records, freeze specs with SHA hashes, write HANDOFF.md files, "
+    "and update the board. You never execute code, never write implementation. "
+    "You speak in structured formats: JSON specs, markdown handoffs, build log events. "
+    "Every claim you make is backed by a verify command or a file path. "
+    "You are the memory of CRANE. Nothing is done until you record it."
+)
+
+VELVET_QC_BRAIN = (
+    "You are VELVET-QC, the quality control agent for CRANE. "
+    "You run verify commands, inspect test output, and mark deliverables PASS or FAIL. "
+    "You never accept an agent's self-report as proof. You run the command and read the output. "
+    "You enforce: completion >= 0.90 AND all weight-3 deliverables must PASS before close. "
+    "You check GPU waste before every project close. "
+    "You write the close section of HANDOFF.md: timeline, lessons, agent performance, recommendations. "
+    "Your evidence is always raw stdout/stderr bytes, never a summary. "
+    "If a deliverable fails 3 times, you escalate to Astra with the full error trace."
+)
+
+# Register NEXUS agents in the A-Team roster
+ATEAM["velvet-track"] = {
+    "name": "VELVET-TRACK",
+    "role": "Project Board Manager",
+    "dept": "Project Intelligence",
+    "model_id": "local:qwen-coder-1.5b",
+    "model_label": "Qwen2.5-Coder-1.5B (always-on)",
+    "color": "#10b981",
+    "icon": "◈",
+    "brain1": VELVET_TRACK_BRAIN,
+    "brain2_template": "Active project specs, board state, and build log conventions for current session.",
+}
+ATEAM["velvet-qc"] = {
+    "name": "VELVET-QC",
+    "role": "Quality Control & Handoff",
+    "dept": "Project Intelligence",
+    "model_id": "local:qwen-coder-3b",
+    "model_label": "Qwen2.5-Coder-3B",
+    "color": "#06b6d4",
+    "icon": "◉",
+    "brain1": VELVET_QC_BRAIN,
+    "brain2_template": "Project-specific test commands, acceptance criteria, and failure patterns.",
+}
+_agent_brain2["velvet-track"] = ATEAM["velvet-track"]["brain2_template"]
+_agent_brain2["velvet-qc"]    = ATEAM["velvet-qc"]["brain2_template"]
+
+
+# ── /board page ───────────────────────────────────────────────────────────────
+
+@app.get("/board", response_class=HTMLResponse)
+async def serve_board():
+    return HTMLResponse(content=r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CRANE — Project Board</title>
+<style>
+:root{
+  --bg:#0d0d10;--panel:#16151a;--card:#1c1b22;--card2:#211f28;--border:#2a2433;
+  --text:#eef2f3;--muted:#8a9296;--dim:#63696c;
+  --green:#10b981;--cyan:#06b6d4;--gold:#f0b429;--red:#ef4444;--orange:#f59e0b;
+  --cu:#818cf8;--cu-dim:rgba(129,140,248,.1);--cu-border:rgba(129,140,248,.28);
+  --nex:#10b981;--qc:#06b6d4;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;display:flex;flex-direction:column;}
+
+/* TOPBAR */
+#topbar{height:44px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:14px;flex-shrink:0;}
+.tb-brand{font-weight:800;font-size:13px;letter-spacing:2px;color:var(--nex);}
+.top-nav a{color:var(--muted);text-decoration:none;padding:0 10px;height:32px;display:inline-flex;align-items:center;font-size:12px;font-weight:500;border-radius:5px;transition:.15s;}
+.top-nav a:hover{color:var(--text);background:rgba(255,255,255,.05);}
+.top-nav a.active{color:var(--nex);background:rgba(16,185,129,.1);}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+.tb-chip{font-size:9px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;border-radius:3px;border:1px solid rgba(16,185,129,.3);color:var(--nex);background:rgba(16,185,129,.08);}
+
+/* LAYOUT */
+#layout{display:flex;flex:1;overflow:hidden;}
+
+/* LEFT — project list */
+#proj-list{width:280px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.pl-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;}
+.pl-title{font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);flex:1;}
+.pl-new-btn{background:var(--nex);color:#fff;border:none;border-radius:5px;padding:4px 10px;font-size:10px;font-weight:700;cursor:pointer;transition:.15s;}
+.pl-new-btn:hover{background:#059669;}
+#proj-cards{flex:1;overflow-y:auto;padding:8px;}
+#proj-cards::-webkit-scrollbar{width:3px;}
+#proj-cards::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.proj-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:7px;cursor:pointer;transition:.15s;border-left:3px solid var(--border);}
+.proj-card:hover{background:var(--card2);border-color:rgba(16,185,129,.3);}
+.proj-card.active{border-left-color:var(--nex);background:var(--card2);}
+.pc-name{font-size:12px;font-weight:700;margin-bottom:4px;}
+.pc-goal{font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.4;}
+.pc-meter-wrap{height:4px;background:rgba(255,255,255,.07);border-radius:2px;margin-bottom:5px;}
+.pc-meter{height:4px;border-radius:2px;transition:.6s;}
+.pc-foot{display:flex;align-items:center;justify-content:space-between;font-size:9px;color:var(--dim);}
+.pc-status{font-weight:700;letter-spacing:1px;padding:1px 6px;border-radius:2px;}
+.s-init{color:var(--muted);background:rgba(255,255,255,.06);}
+.s-spec{color:var(--cyan);background:rgba(6,182,212,.1);}
+.s-active{color:var(--gold);background:rgba(240,180,41,.1);}
+.s-threshold{color:var(--nex);background:rgba(16,185,129,.12);}
+.s-closed{color:var(--dim);background:rgba(255,255,255,.04);}
+
+/* CENTER — project detail */
+#proj-detail{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+#detail-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:14px;}
+.dh-name{font-size:18px;font-weight:800;letter-spacing:.3px;}
+.dh-goal{font-size:11px;color:var(--muted);margin-top:3px;}
+.dh-meta{font-size:10px;color:var(--dim);margin-top:2px;}
+.dh-right{margin-left:auto;text-align:right;flex-shrink:0;}
+.dh-pct{font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--nex);}
+.dh-gate{font-size:9px;color:var(--muted);margin-top:2px;}
+.big-meter-wrap{height:6px;background:rgba(255,255,255,.06);border-radius:3px;margin:10px 18px 0;}
+.big-meter{height:6px;border-radius:3px;background:var(--nex);transition:.6s;}
+
+/* detail tabs */
+.d-tabs{display:flex;border-bottom:1px solid var(--border);padding:0 18px;flex-shrink:0;}
+.d-tab{padding:8px 14px;font-size:9px;font-weight:700;letter-spacing:1.5px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;}
+.d-tab.active{color:var(--nex);border-bottom-color:var(--nex);}
+
+/* deliverables */
+#view-deliverables{flex:1;overflow-y:auto;padding:14px 18px;display:none;}
+#view-deliverables.show{display:block;}
+.deliv-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px;border-left:3px solid var(--border);}
+.deliv-card.pass{border-left-color:var(--nex);}
+.deliv-card.fail{border-left-color:var(--red);}
+.deliv-card.pending{border-left-color:var(--orange);}
+.deliv-card.blocked{border-left-color:var(--muted);}
+.dv-head{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.dv-id{font-size:9px;font-weight:700;letter-spacing:1.5px;font-family:'JetBrains Mono',monospace;color:var(--cyan);}
+.dv-weight{font-size:8px;padding:1px 5px;border-radius:2px;background:rgba(255,255,255,.08);color:var(--muted);}
+.dv-state{font-size:8px;font-weight:700;letter-spacing:1px;margin-left:auto;padding:2px 7px;border-radius:2px;}
+.dv-pass{background:rgba(16,185,129,.15);color:var(--nex);}
+.dv-fail{background:rgba(239,68,68,.15);color:var(--red);}
+.dv-pending{background:rgba(245,158,11,.12);color:var(--orange);}
+.dv-blocked{background:rgba(255,255,255,.06);color:var(--muted);}
+.dv-stmt{font-size:12px;font-weight:600;margin-bottom:3px;}
+.dv-evidence{font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;margin-top:4px;}
+.dv-actions{display:flex;gap:6px;margin-top:8px;}
+.dv-btn{background:var(--card2);border:1px solid var(--border);border-radius:4px;padding:3px 9px;font-size:9px;font-weight:700;color:var(--muted);cursor:pointer;transition:.15s;letter-spacing:1px;}
+.dv-btn:hover{color:var(--text);border-color:var(--nex);}
+.dv-btn.run{background:rgba(6,182,212,.1);border-color:rgba(6,182,212,.25);color:var(--cyan);}
+.dv-btn.pass{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.25);color:var(--nex);}
+.dv-btn.fail{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:var(--red);}
+
+/* build log */
+#view-log{flex:1;overflow-y:auto;padding:14px 18px;display:none;font-family:'JetBrains Mono',monospace;font-size:11px;}
+#view-log.show{display:block;}
+.log-entry{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:10px;align-items:flex-start;}
+.log-ts{color:var(--dim);flex-shrink:0;font-size:9px;padding-top:2px;}
+.log-actor{font-weight:700;flex-shrink:0;font-size:9px;padding-top:2px;}
+.log-type{color:var(--muted);flex-shrink:0;font-size:9px;padding-top:2px;}
+.log-detail{color:var(--text);flex:1;line-height:1.4;}
+
+/* handoff */
+#view-handoff{flex:1;overflow-y:auto;padding:14px 18px;display:none;}
+#view-handoff.show{display:block;}
+#handoff-md{font-size:12px;line-height:1.7;color:var(--text);white-space:pre-wrap;font-family:'Inter',sans-serif;}
+#handoff-md h1,#handoff-md h2,#handoff-md h3{color:var(--nex);margin:12px 0 6px;}
+#handoff-md code{background:var(--card);padding:1px 5px;border-radius:3px;font-family:'JetBrains Mono',monospace;}
+
+/* empty state */
+#empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:var(--muted);}
+.es-icon{font-size:48px;opacity:.2;}
+.es-label{font-size:14px;font-weight:600;}
+.es-sub{font-size:11px;color:var(--dim);}
+
+/* RIGHT — build log stream + actions */
+#right-col{width:300px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.rc-head{padding:10px 14px;border-bottom:1px solid var(--border);font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);}
+#live-log{flex:1;overflow-y:auto;padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:10px;display:flex;flex-direction:column;gap:3px;}
+#live-log::-webkit-scrollbar{width:3px;}
+#live-log::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.ll-entry{padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03);}
+.ll-time{color:var(--dim);margin-right:6px;}
+.ll-actor{font-weight:700;margin-right:4px;}
+.ll-msg{color:var(--muted);}
+
+/* actions panel */
+#actions-panel{border-top:1px solid var(--border);padding:12px;}
+.ap-head{font-size:9px;font-weight:700;letter-spacing:2px;color:var(--muted);margin-bottom:10px;}
+.ap-btn{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:7px 12px;font-size:11px;font-weight:700;color:var(--text);cursor:pointer;text-align:left;margin-bottom:6px;transition:.15s;display:flex;align-items:center;gap:8px;}
+.ap-btn:hover{background:var(--card2);}
+.ap-btn.green:hover{border-color:rgba(16,185,129,.4);color:var(--nex);}
+.ap-btn.cyan:hover{border-color:rgba(6,182,212,.4);color:var(--cyan);}
+.ap-btn.red:hover{border-color:rgba(239,68,68,.3);color:var(--red);}
+.ap-btn .btn-icon{font-size:14px;}
+
+/* GPU status bar */
+#gpu-bar{padding:8px 14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:10px;flex-shrink:0;}
+.gpu-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.gpu-dot.on{background:var(--red);box-shadow:0 0 5px var(--red);}
+.gpu-dot.off{background:var(--dim);}
+
+/* NEW PROJECT MODAL */
+#new-proj-modal{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.7);align-items:center;justify-content:center;}
+#new-proj-modal.open{display:flex;}
+.modal-box{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-height:80vh;overflow-y:auto;}
+.modal-title{font-size:14px;font-weight:800;letter-spacing:.5px;margin-bottom:16px;color:var(--nex);}
+.modal-field{margin-bottom:12px;}
+.modal-label{font-size:9px;font-weight:700;letter-spacing:1.5px;color:var(--muted);margin-bottom:5px;}
+.modal-input{width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;transition:.15s;font-family:'Inter',sans-serif;}
+.modal-input:focus{border-color:var(--nex);}
+textarea.modal-input{resize:none;min-height:60px;}
+.modal-actions{display:flex;gap:8px;margin-top:16px;}
+.modal-btn{flex:1;padding:8px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;border:none;transition:.15s;}
+.modal-btn.primary{background:var(--nex);color:#fff;}
+.modal-btn.primary:hover{background:#059669;}
+.modal-btn.cancel{background:var(--card);color:var(--muted);border:1px solid var(--border);}
+.modal-btn.cancel:hover{color:var(--text);}
+.deliverable-row{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;}
+.dr-top{display:flex;gap:8px;margin-bottom:6px;}
+.dr-id{width:80px;}
+.dr-weight{width:70px;}
+.dr-add{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.25);border-radius:5px;padding:5px 12px;font-size:10px;font-weight:700;color:var(--nex);cursor:pointer;margin-top:4px;}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="tb-brand">◈ PROJECT BOARD</span>
+  <div style="width:1px;height:20px;background:var(--border)"></div>
+  <nav class="top-nav">
+    <a href="/ide">Home</a>
+    <a href="/cu">CU Dept</a>
+    <a href="/board" class="active">Board</a>
+  </nav>
+  <div class="tb-right">
+    <span class="tb-chip" id="boardChip">VELVET READY</span>
+    <span style="font-size:10px;color:var(--muted)" id="boardProjectCount">0 projects</span>
+  </div>
+</div>
+
+<div id="layout">
+
+  <!-- LEFT: project list -->
+  <div id="proj-list">
+    <div class="pl-head">
+      <span class="pl-title">ACTIVE PROJECTS</span>
+      <button class="pl-new-btn" onclick="openNewModal()">+ New</button>
+    </div>
+    <div id="proj-cards">
+      <div style="padding:20px 12px;font-size:10px;color:var(--dim);text-align:center">Loading projects…</div>
+    </div>
+  </div>
+
+  <!-- CENTER: project detail -->
+  <div id="proj-detail">
+    <div id="empty-state">
+      <div class="es-icon">◈</div>
+      <div class="es-label">Select a project</div>
+      <div class="es-sub">or create a new one to start tracking</div>
+    </div>
+
+    <!-- populated when a project is selected -->
+    <div id="detail-content" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+      <div id="detail-head">
+        <div>
+          <div class="dh-name" id="dh-name">—</div>
+          <div class="dh-goal" id="dh-goal">—</div>
+          <div class="dh-meta" id="dh-meta">—</div>
+        </div>
+        <div class="dh-right">
+          <div class="dh-pct" id="dh-pct">0%</div>
+          <div class="dh-gate" id="dh-gate">gate 90%</div>
+          <div class="pc-status s-init" id="dh-status" style="margin-top:5px">INIT</div>
+        </div>
+      </div>
+      <div class="big-meter-wrap"><div class="big-meter" id="big-meter" style="width:0%"></div></div>
+
+      <div class="d-tabs">
+        <div class="d-tab active" id="dtab-deliverables" onclick="dSwitch('deliverables')">DELIVERABLES</div>
+        <div class="d-tab" id="dtab-log"         onclick="dSwitch('log')">BUILD LOG</div>
+        <div class="d-tab" id="dtab-handoff"     onclick="dSwitch('handoff')">HANDOFF.MD</div>
+      </div>
+
+      <div id="view-deliverables" class="show"></div>
+      <div id="view-log"></div>
+      <div id="view-handoff"><pre id="handoff-md"></pre></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: live stream + actions -->
+  <div id="right-col">
+    <div class="rc-head">LIVE EVENTS</div>
+    <div id="live-log">
+      <div style="color:var(--dim);font-size:10px;padding:8px 0">Waiting for events…</div>
+    </div>
+
+    <div id="actions-panel">
+      <div class="ap-head">VELVET ACTIONS</div>
+      <button class="ap-btn cyan" onclick="runQC()"><span class="btn-icon">◉</span> Run QC Check</button>
+      <button class="ap-btn green" onclick="closeProject()"><span class="btn-icon">✓</span> Close Project</button>
+      <button class="ap-btn" onclick="loadHandoff()"><span class="btn-icon">◱</span> View HANDOFF.md</button>
+      <button class="ap-btn red" onclick="gpuCheck()"><span class="btn-icon">⏻</span> GPU Waste Check</button>
+    </div>
+
+    <div id="gpu-bar">
+      <div class="gpu-dot off" id="gpuDot"></div>
+      <span id="gpuLabel" style="color:var(--dim)">GPU off</span>
+    </div>
+  </div>
+</div>
+
+<!-- NEW PROJECT MODAL -->
+<div id="new-proj-modal">
+  <div class="modal-box">
+    <div class="modal-title">◈ New Project</div>
+
+    <div class="modal-field">
+      <div class="modal-label">PROJECT NAME</div>
+      <input class="modal-input" id="np-name" placeholder="e.g. Login Auth System"/>
+    </div>
+    <div class="modal-field">
+      <div class="modal-label">GOAL</div>
+      <textarea class="modal-input" id="np-goal" placeholder="What will be built and why…"></textarea>
+    </div>
+    <div class="modal-field">
+      <div class="modal-label">COMPLETION GATE</div>
+      <input class="modal-input" id="np-gate" value="0.90" type="number" min="0.5" max="1.0" step="0.05"/>
+    </div>
+    <div class="modal-field">
+      <div class="modal-label">DELIVERABLES</div>
+      <div id="deliverable-list"></div>
+      <button class="dr-add" onclick="addDelivRow()">+ Add Deliverable</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="createProject()">◈ Init Project</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── STATE ─────────────────────────────────────────────────────────────────
+let _projects = {};
+let _activePid = null;
+let _liveLogTimer = null;
+let _delivRowCount = 0;
+
+const STATUS_CLS = {INIT:'s-init',SPEC:'s-spec',ACTIVE:'s-active',THRESHOLD:'s-threshold',CLOSED:'s-closed'};
+const METER_COLORS = {INIT:'#475569',SPEC:'#06b6d4',ACTIVE:'#f0b429',THRESHOLD:'#10b981',CLOSED:'#8a9296'};
+
+// ── BOARD LOAD ────────────────────────────────────────────────────────────
+async function loadBoard(){
+  try{
+    const r=await fetch('/api/velvet/board'); const d=await r.json();
+    _projects={};
+    d.projects.forEach(p=>{ _projects[p.id]=p; });
+    renderProjectList(d.projects);
+    document.getElementById('boardProjectCount').textContent=d.total+' project'+(d.total!==1?'s':'');
+  }catch(e){}
+}
+
+function renderProjectList(projects){
+  const el=document.getElementById('proj-cards');
+  if(!projects.length){ el.innerHTML='<div style="padding:20px 12px;font-size:10px;color:var(--dim);text-align:center">No projects yet.<br>Click + New to start.</div>'; return; }
+  el.innerHTML='';
+  projects.forEach(p=>{
+    const pct=Math.round((p.completion||0)*100);
+    const col=METER_COLORS[p.status]||'#475569';
+    const card=document.createElement('div');
+    card.className='proj-card'+(p.id===_activePid?' active':'');
+    card.onclick=()=>selectProject(p.id);
+    card.innerHTML=`
+      <div class="pc-name">${p.name}</div>
+      <div class="pc-goal">${(p.goal||'').slice(0,60)}${p.goal&&p.goal.length>60?'…':''}</div>
+      <div class="pc-meter-wrap"><div class="pc-meter" style="width:${pct}%;background:${col}"></div></div>
+      <div class="pc-foot">
+        <span class="pc-status ${STATUS_CLS[p.status]||'s-init'}">${p.status||'INIT'}</span>
+        <span>${pct}%</span>
+      </div>`;
+    el.appendChild(card);
+  });
+}
+
+// ── PROJECT SELECT ────────────────────────────────────────────────────────
+async function selectProject(pid){
+  _activePid=pid;
+  document.querySelectorAll('.proj-card').forEach(c=>c.classList.toggle('active',c.onclick&&false));
+  renderProjectList(Object.values(_projects));
+  document.getElementById('empty-state').style.display='none';
+  const dc=document.getElementById('detail-content'); dc.style.display='flex';
+  await refreshDetail();
+  startLiveLog();
+}
+
+async function refreshDetail(){
+  if(!_activePid)return;
+  try{
+    const r=await fetch(`/api/velvet/project/${_activePid}`); const d=await r.json();
+    if(d.error)return;
+    const p=d.project; const gate=d.gate;
+    document.getElementById('dh-name').textContent=p.name;
+    document.getElementById('dh-goal').textContent=p.goal;
+    const created=p.created_at?new Date(p.created_at*1000).toLocaleString():'—';
+    const agents=(p.agents||[]).join(', ');
+    document.getElementById('dh-meta').textContent=`Started: ${created} · Agents: ${agents} · Spec SHA: ${(p.spec_sha||'—').slice(0,8)}`;
+    const pct=Math.round((p.completion||0)*100);
+    document.getElementById('dh-pct').textContent=pct+'%';
+    document.getElementById('dh-gate').textContent=`gate ${Math.round((p.completion_gate||0.9)*100)}% · ${gate.verdict}`;
+    document.getElementById('big-meter').style.width=pct+'%';
+    document.getElementById('big-meter').style.background=METER_COLORS[p.status]||'#10b981';
+    const stEl=document.getElementById('dh-status');
+    stEl.textContent=p.status; stEl.className='pc-status '+(STATUS_CLS[p.status]||'s-init');
+    _projects[_activePid]={..._projects[_activePid],...p};
+    if(document.getElementById('view-deliverables').classList.contains('show')) renderDeliverables(p.deliverables||[]);
+  }catch(e){}
+}
+
+function renderDeliverables(deliverables){
+  const el=document.getElementById('view-deliverables'); el.innerHTML='';
+  if(!deliverables.length){
+    el.innerHTML='<div style="color:var(--dim);font-size:11px;padding:20px;text-align:center">No deliverables defined.</div>';
+    return;
+  }
+  deliverables.forEach(d=>{
+    const state=(d.state||'PENDING').toLowerCase();
+    const stCls={'pass':'dv-pass','fail':'dv-fail','pending':'dv-pending','blocked':'dv-blocked'}[state]||'dv-pending';
+    const card=document.createElement('div');
+    card.className=`deliv-card ${state}`;
+    card.innerHTML=`
+      <div class="dv-head">
+        <span class="dv-id">${d.id}</span>
+        <span class="dv-weight">w${d.weight||1}</span>
+        <span class="dv-state ${stCls}">${d.state||'PENDING'}</span>
+      </div>
+      <div class="dv-stmt">${d.statement}</div>
+      ${d.verify_cmd?`<div class="dv-evidence">$ ${d.verify_cmd}</div>`:''}
+      ${d.evidence_preview?`<div class="dv-evidence" style="color:var(--muted);margin-top:3px">${d.evidence_preview}</div>`:''}
+      <div class="dv-actions">
+        ${d.verify_cmd?`<button class="dv-btn run" onclick="runOneQC('${d.id}')">▶ Run QC</button>`:''}
+        <button class="dv-btn pass" onclick="markDeliverable('${d.id}','PASS')">✓ PASS</button>
+        <button class="dv-btn fail" onclick="markDeliverable('${d.id}','FAIL')">✗ FAIL</button>
+      </div>`;
+    el.appendChild(card);
+  });
+}
+
+async function markDeliverable(did, state){
+  if(!_activePid)return;
+  await fetch(`/api/velvet/project/${_activePid}/deliverable`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({project_id:_activePid,deliverable_id:did,state,evidence:'Manual mark by operator',actor:'operator'})
+  });
+  await refreshDetail();
+  addLiveEntry('operator',`Marked ${did} → ${state}`);
+}
+
+async function runOneQC(did){
+  if(!_activePid)return;
+  addLiveEntry('velvet-qc',`Running QC on ${did}…`);
+  const r=await fetch(`/api/velvet/project/${_activePid}/qc`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({project_id:_activePid,deliverable_id:did})
+  });
+  const d=await r.json();
+  const res=d.results&&d.results[0];
+  if(res) addLiveEntry('velvet-qc',`${did} → ${res.state}${res.evidence_preview?' | '+res.evidence_preview:''}`);
+  if(d.gpu_warning) addLiveEntry('velvet-qc','⚠ GPU is running — remember to stop it');
+  await refreshDetail();
+}
+
+// ── DETAIL TABS ───────────────────────────────────────────────────────────
+function dSwitch(tab){
+  ['deliverables','log','handoff'].forEach(t=>{
+    document.getElementById('dtab-'+t).classList.toggle('active',t===tab);
+    const v=document.getElementById('view-'+t);
+    v.classList.toggle('show',t===tab);
+    v.style.display=t===tab?'block':'none';
+  });
+  document.getElementById('view-deliverables').style.display=tab==='deliverables'?'block':'none';
+  if(tab==='log') loadBuildLog();
+  if(tab==='handoff') loadHandoff();
+}
+// fix initial
+document.getElementById('view-deliverables').style.display='block';
+document.getElementById('view-log').style.display='none';
+document.getElementById('view-handoff').style.display='none';
+
+async function loadBuildLog(){
+  if(!_activePid)return;
+  const r=await fetch(`/api/velvet/project/${_activePid}/log`); const d=await r.json();
+  const el=document.getElementById('view-log'); el.innerHTML='';
+  if(!d.log.length){ el.innerHTML='<div style="color:var(--dim);padding:12px;font-size:10px">No log entries yet.</div>'; return; }
+  d.log.slice().reverse().forEach(ev=>{
+    const ts=ev.ts?new Date(ev.ts*1000).toLocaleTimeString():'—';
+    const row=document.createElement('div'); row.className='log-entry';
+    const msg=ev.deliverable?`${ev.event_type} · ${ev.deliverable} → ${ev.state||''}`
+             :ev.message||ev.event_type||JSON.stringify(ev).slice(0,60);
+    row.innerHTML=`<span class="log-ts">${ts}</span><span class="log-actor" style="color:var(--cyan)">${ev.actor||'?'}</span><span class="log-detail">${msg}</span>`;
+    el.appendChild(row);
+  });
+}
+
+async function loadHandoff(){
+  if(!_activePid)return;
+  const pd=_proj_dir||`/home/hunt/.crane/projects/${_activePid}`;
+  try{
+    const r=await fetch(`/api/velvet/project/${_activePid}`); const d=await r.json();
+    if(d.error)return;
+    const p=d.project;
+    // render a markdown-like preview from the project data
+    const pct=Math.round((p.completion||0)*100);
+    const lines=[
+      `# HANDOFF — ${p.name}`,``,
+      `**Project ID:** \`${p.id}\``,
+      `**Goal:** ${p.goal}`,
+      `**Status:** ${p.status} · ${pct}% complete`,
+      `**Created:** ${p.created_at?new Date(p.created_at*1000).toLocaleString():'—'}`,
+      p.closed_at?`**Closed:** ${new Date(p.closed_at*1000).toLocaleString()}`:'',
+      `**Agents:** ${(p.agents||[]).join(', ')}`,
+      `**GitHub:** ${p.github_repo||'(not yet created)'}`,
+      `**Spec SHA:** ${p.spec_sha||'—'}`,``,
+      `## Spec Objectives`,``,
+    ];
+    (p.deliverables||[]).forEach(d=>{
+      const icon=d.state==='PASS'?'✅':d.state==='FAIL'?'❌':'⏳';
+      lines.push(`- ${icon} **${d.id}** (w${d.weight||1}): ${d.statement} — \`${d.state||'PENDING'}\``);
+    });
+    if(p.lessons_learned){ lines.push(``,`## Lessons Learned`,``,p.lessons_learned); }
+    if(p.areas_of_opportunity){ lines.push(``,`## Areas of Opportunity`,``,p.areas_of_opportunity); }
+    if((p.agent_improvements||[]).length){
+      lines.push(``,`## Agent Improvement Recommendations`,``);
+      p.agent_improvements.forEach(r=>lines.push(`- **${r.agent}**: ${r.recommendation}`));
+    }
+    document.getElementById('handoff-md').textContent=lines.filter(l=>l!==null&&l!==undefined).join('\n');
+  }catch(e){}
+}
+
+// ── ACTIONS ───────────────────────────────────────────────────────────────
+async function runQC(){
+  if(!_activePid){alert('Select a project first');return;}
+  addLiveEntry('velvet-qc','Running full QC pass…');
+  const r=await fetch(`/api/velvet/project/${_activePid}/qc`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({project_id:_activePid,deliverable_id:''})
+  });
+  const d=await r.json();
+  const pass=(d.results||[]).filter(r=>r.state==='PASS').length;
+  const total=(d.results||[]).length;
+  addLiveEntry('velvet-qc',`QC complete: ${pass}/${total} PASS · completion ${Math.round((d.completion||0)*100)}% · ${d.gate?.verdict}`);
+  if(d.gpu_warning) addLiveEntry('velvet-qc','⚠ GPU is running — remember to stop it');
+  await refreshDetail();
+}
+
+async function closeProject(){
+  if(!_activePid){alert('Select a project first');return;}
+  const lessons=prompt('Lessons learned (brief):','');
+  const opps=prompt('Areas of opportunity:','');
+  const r=await fetch(`/api/velvet/project/${_activePid}/close`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({project_id:_activePid,lessons_learned:lessons||'',areas_of_opportunity:opps||'',agent_improvements:[]})
+  });
+  const d=await r.json();
+  if(d.error){ addLiveEntry('velvet-qc','⚠ Close blocked: '+d.error); return; }
+  addLiveEntry('velvet-qc',`Project CLOSED · ${Math.round((d.completion||0)*100)}% · SHA ${(d.git_sha||'').slice(0,8)}`);
+  if(d.gpu_stopped) addLiveEntry('velvet-qc','GPU stopped automatically before close');
+  await loadBoard();
+  await refreshDetail();
+}
+
+async function gpuCheck(){
+  const r=await fetch('/api/velvet/gpu/check'); const d=await r.json();
+  const dot=document.getElementById('gpuDot');
+  const lbl=document.getElementById('gpuLabel');
+  if(d.running){
+    dot.className='gpu-dot on';
+    lbl.textContent=`GPU RUNNING — $${(d.cost_accrued||0).toFixed(3)} accrued`;
+    lbl.style.color='var(--red)';
+    addLiveEntry('velvet-qc','⚠ GPU IS RUNNING — click Stop GPU to prevent waste');
+  }else{
+    dot.className='gpu-dot off';
+    lbl.textContent='GPU off';
+    lbl.style.color='var(--dim)';
+    addLiveEntry('velvet-qc','✓ GPU confirmed off');
+  }
+}
+
+// ── LIVE LOG STREAM ───────────────────────────────────────────────────────
+function addLiveEntry(actor,msg){
+  const el=document.getElementById('live-log');
+  const row=document.createElement('div'); row.className='ll-entry';
+  const ts=new Date().toLocaleTimeString();
+  const colors={'velvet-track':'#10b981','velvet-qc':'#06b6d4','operator':'#f0b429','hannibal':'#f0b429','astra':'#ef4444'};
+  row.innerHTML=`<span class="ll-time">${ts}</span><span class="ll-actor" style="color:${colors[actor]||'#818cf8'}">${actor}</span> <span class="ll-msg">${msg}</span>`;
+  if(el.children.length>0&&el.children[0].textContent.includes('Waiting')){el.innerHTML='';}
+  el.insertBefore(row,el.firstChild);
+  if(el.children.length>50) el.removeChild(el.lastChild);
+}
+
+function startLiveLog(){
+  if(_liveLogTimer) clearInterval(_liveLogTimer);
+  _liveLogTimer=setInterval(async()=>{
+    if(!_activePid)return;
+    await refreshDetail();
+    await gpuCheck();
+  },10000);
+}
+
+// ── NEW PROJECT MODAL ─────────────────────────────────────────────────────
+function openNewModal(){
+  document.getElementById('new-proj-modal').classList.add('open');
+  document.getElementById('deliverable-list').innerHTML='';
+  _delivRowCount=0;
+  addDelivRow(); // start with one
+}
+function closeModal(){ document.getElementById('new-proj-modal').classList.remove('open'); }
+
+function addDelivRow(){
+  _delivRowCount++;
+  const i=_delivRowCount;
+  const list=document.getElementById('deliverable-list');
+  const row=document.createElement('div'); row.className='deliverable-row'; row.id='dr-'+i;
+  row.innerHTML=`
+    <div class="dr-top">
+      <input class="modal-input dr-id" id="dr-id-${i}" placeholder="D-${i.toString().padStart(2,'0')}" value="D-${i.toString().padStart(2,'0')}"/>
+      <select class="modal-input dr-weight" id="dr-w-${i}">
+        <option value="1">w1 nice</option>
+        <option value="2" selected>w2 should</option>
+        <option value="3">w3 MUST</option>
+      </select>
+      <button class="modal-btn cancel" style="flex:0;padding:4px 8px;font-size:10px" onclick="document.getElementById('dr-${i}').remove()">✕</button>
+    </div>
+    <input class="modal-input" id="dr-stmt-${i}" placeholder="Deliverable statement…" style="margin-bottom:6px"/>
+    <input class="modal-input" id="dr-cmd-${i}" placeholder="Verify command (e.g. pytest tests/test_auth.py -q)" style="font-family:'JetBrains Mono',monospace;font-size:10px"/>`;
+  list.appendChild(row);
+}
+
+async function createProject(){
+  const name=document.getElementById('np-name').value.trim();
+  const goal=document.getElementById('np-goal').value.trim();
+  const gate=parseFloat(document.getElementById('np-gate').value)||0.90;
+  if(!name||!goal){alert('Name and goal are required.');return;}
+  const deliverables=[];
+  for(let i=1;i<=_delivRowCount;i++){
+    const idEl=document.getElementById(`dr-id-${i}`);
+    if(!idEl)continue;
+    const stmt=document.getElementById(`dr-stmt-${i}`).value.trim();
+    if(!stmt)continue;
+    deliverables.push({
+      id:idEl.value.trim()||`D-${i.toString().padStart(2,'0')}`,
+      statement:stmt,
+      weight:parseInt(document.getElementById(`dr-w-${i}`).value)||2,
+      verify_cmd:document.getElementById(`dr-cmd-${i}`).value.trim(),
+    });
+  }
+  try{
+    const r=await fetch('/api/velvet/project/init',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,goal,deliverables,completion_gate:gate})
+    });
+    const d=await r.json();
+    if(d.error){alert('Error: '+d.error);return;}
+    closeModal();
+    addLiveEntry('velvet-track',`Project initialized: ${name} · SHA ${d.spec_sha}`);
+    await loadBoard();
+    await selectProject(d.project_id);
+  }catch(e){alert('Error: '+e.message);}
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded',()=>{
+  loadBoard();
+  gpuCheck();
+  setInterval(gpuCheck,15000);
+  setInterval(loadBoard,20000);
+});
+
+// Ctrl+B toggle from other pages (injected via keyboard shortcut)
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='b'){ e.preventDefault(); window.location='/board'; }
+});
+</script>
+</body>
+</html>
+""")
