@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -7605,6 +7605,23 @@ class CUCompleteRequest(_BM):
     files: list = []
     test_cmd: str = ""
 
+
+def _server_origin(request) -> str:
+    """
+    Where this server actually is, resolved from the live request.
+
+    Verify commands and the preview pane must never carry a hardcoded port —
+    that is how a passing gate turns into a false failure after a restart on a
+    different port. Callers write $ORIGIN and we substitute the real value.
+    """
+    return f"{request.url.scheme}://{request.url.netloc}"
+
+
+def _expand_origin(text: str, origin: str) -> str:
+    if not text:
+        return text
+    return text.replace("$ORIGIN", origin).replace("${ORIGIN}", origin)
+
 class CUResetRequest(_BM):
     agent: str = ""   # empty = reset all
 
@@ -7649,7 +7666,7 @@ async def cu_agent_assign(req: CUAssignRequest):
 
 
 @app.post("/api/cu/agent/complete")
-async def cu_agent_complete(req: CUCompleteRequest):
+async def cu_agent_complete(req: CUCompleteRequest, request: Request):
     """
     onAgentComplete hook. The agent claims done — VELVET decides if that's true.
 
@@ -7659,6 +7676,15 @@ async def cu_agent_complete(req: CUCompleteRequest):
     states = _cu_states_load()
     if req.agent not in states:
         return {"error": f"unknown agent {req.agent}"}
+
+    # Resolve $ORIGIN against the live request so a verify command never carries
+    # a stale port. A gate must fail for a real reason, not a moved server.
+    origin = _server_origin(request)
+    deliverables = [
+        {**d, "verify_cmd": _expand_origin(d.get("verify_cmd", ""), origin)}
+        for d in req.deliverables
+    ]
+    test_cmd = _expand_origin(req.test_cmd, origin)
 
     st = states[req.agent]
     st["attempts"] = st.get("attempts", 0) + 1
@@ -7672,9 +7698,9 @@ async def cu_agent_complete(req: CUCompleteRequest):
         agent=req.agent,
         project_id=req.project_id,
         work_order=req.work_order or st.get("work_order") or "",
-        deliverables=req.deliverables,
+        deliverables=deliverables,
         files=req.files,
-        test_cmd=req.test_cmd,
+        test_cmd=test_cmd,
         attempts=st["attempts"],
         build_seconds=build_seconds,
     )
