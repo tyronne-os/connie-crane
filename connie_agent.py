@@ -111,22 +111,21 @@ class KnowledgeBase:
 
 # TTS Configuration with Fallback Chain
 TTS_CONFIG = {
-    "primary": "pyttsx3_female",  # Local, no network needed
+    "primary": "nvidia_tts_small",  # NVIDIA is primary (you have API key)
     "fallbacks": [
-        "nvidia_tts_small",         # NVIDIA small model (via API key)
-        "microsoft_videovice_latest", # Microsoft VideoVoice (latest)
-        "silence",                  # Last resort: acknowledge but no audio
+        "videovoice_1b",            # VideoVoice (1B open-source from HF)
+        "silence",                  # Last resort
     ],
-    "never_use": ["elevenlabs", "browser_default", "male_voices"],  # Explicit exclusions
+    "never_use": ["pyttsx3", "elevenlabs", "browser_default", "male_voices"],
     "nvidia": {
         "api_key": os.environ.get("NVIDIA_API_KEY", ""),  # Reads from env
         "model": "nvidia/neva-tts",  # NVIDIA small TTS model
         "endpoint": "https://api.nvidia.com/v1/audio/tts",
     },
-    "microsoft": {
+    "videovoice": {
         "model": "videovoice-1b",  # Open-source on HF
         "hf_repo": "videovoice/videovoice-1b",
-        "device": "cpu",  # Use CPU, falls back to GPU if available
+        "device": "cuda" if os.environ.get("CUDA_AVAILABLE") else "cpu",
     }
 }
 

@@ -9905,76 +9905,44 @@ async def voice_stt(file: UploadFile = File(...)):
 
 @app.post("/api/voice/tts")
 async def voice_tts(payload: dict):
-    """Text-to-Speech with fallback chain: pyttsx3 → NVIDIA → Microsoft VideoVoice → silence."""
+    """Text-to-Speech with fallback chain: NVIDIA → VideoVoice 1B → silence. NO pyttsx3."""
     try:
         text = payload.get("text", "").strip()
         if not text:
             return {"status": "error", "message": "No text provided"}
         
-        # Try primary: pyttsx3 local TTS
-        try:
-            import pyttsx3
-            import tempfile
-            
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 150)
-            engine.setProperty('volume', 0.9)
-            
-            # Try to set female voice
-            voices = engine.getProperty('voices')
-            if voices:
-                engine.setProperty('voice', voices[1].id if len(voices) > 1 else voices[0].id)
-            
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                engine.save_to_file(text, tmp.name)
-                engine.runAndWait()
-                
-                with open(tmp.name, 'rb') as f:
-                    audio_data = f.read()
-                
-                import os
-                os.unlink(tmp.name)
-            
-            from fastapi.responses import StreamingResponse
-            import io
-            return StreamingResponse(
-                io.BytesIO(audio_data),
-                media_type="audio/wav",
-                headers={"Content-Disposition": "attachment; filename=response.wav"}
-            )
-        except Exception as e:
-            print(f"[TTS] pyttsx3 failed: {e}, trying NVIDIA...")
-        
-        # Fallback 1: NVIDIA TTS
+        # Primary: NVIDIA TTS (via API key)
         try:
             nvidia_key = os.environ.get("NVIDIA_API_KEY")
-            if nvidia_key:
-                import requests
-                res = requests.post(
-                    "https://api.nvidia.com/v1/audio/tts",
-                    headers={
-                        "Authorization": f"Bearer {nvidia_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "text": text,
-                        "voice": "female_1",
-                        "sample_rate": 22050
-                    },
-                    timeout=10
+            if not nvidia_key:
+                raise Exception("NVIDIA_API_KEY not set")
+            
+            import requests
+            res = requests.post(
+                "https://api.nvidia.com/v1/audio/tts",
+                headers={
+                    "Authorization": f"Bearer {nvidia_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "text": text,
+                    "voice": "female_1",
+                    "sample_rate": 22050
+                },
+                timeout=10
+            )
+            if res.status_code == 200:
+                from fastapi.responses import StreamingResponse
+                import io
+                return StreamingResponse(
+                    io.BytesIO(res.content),
+                    media_type="audio/wav",
+                    headers={"Content-Disposition": "attachment; filename=response.wav"}
                 )
-                if res.status_code == 200:
-                    from fastapi.responses import StreamingResponse
-                    import io
-                    return StreamingResponse(
-                        io.BytesIO(res.content),
-                        media_type="audio/wav",
-                        headers={"Content-Disposition": "attachment; filename=response.wav"}
-                    )
         except Exception as e:
-            print(f"[TTS] NVIDIA failed: {e}, trying Microsoft...")
+            print(f"[TTS] NVIDIA failed: {e}, trying VideoVoice...")
         
-        # Fallback 2: VideoVoice (open-source 1B model from HF)
+        # Fallback 1: VideoVoice (open-source 1B model from HF)
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
             import torch
