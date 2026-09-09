@@ -938,13 +938,28 @@ async def serve_ui():
     <title>CRANE STUDIO - Voice Foundry</title>
     <style>
         :root {
-            --bg-dark: #070d18; --bg-panel: #0d1627; --bg-card: #131f37; --border: #1e3052;
-            --accent-green: #10b981; --accent-blue: #38bdf8; --accent-purple: #a855f7;
-            --accent-red: #ef4444; --text-main: #f1f5f9; --text-muted: #64748b;
+            --bg-canvas: #0c0c0c;
+            --bg: #0d0d10;
+            --surface: #16151a;
+            --border: #29242d;
+            --text: #eef2f3;
+            --text-2: #b3b8ba;
+            --text-muted: #8a9296;
+            --text-dim: #7a8286;
+            --text-faint: #63696c;
+            --gold: #f0b429;
+            --jade: #2ee6b8;
+            --jade-bright: #8ff2da;
+            --red: #ef4444;
+            --orange: #f59e0b;
+            --nvidia: #76b900;
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --ease-micro: 0.15s ease;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Fira Code', 'Courier New', monospace; }
-        body { background: var(--bg-dark); color: var(--text-main); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-        header { height: 50px; background: var(--bg-panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; position: relative; }
+        body { background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+        header { height: 50px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0; position: relative; }
         /* ── CENTER NAV ── */
         .crane-nav { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; background: rgba(0,0,0,.35); border-radius: 8px; padding: 4px; z-index: 10; }
         .nav-tab { color: #64748b; text-decoration: none; padding: 5px 22px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 2px; transition: .15s; font-family: 'Fira Code','Courier New',monospace; }
@@ -956,48 +971,48 @@ async def serve_ui():
         .nav-tab.cu.active { background: rgba(99,102,241,.22); border-color: rgba(99,102,241,.4); color: #818cf8; }
 
         .logo { font-weight: bold; letter-spacing: 1px; font-size: 1rem; color: #fff; }
-        .badge { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; border: 1px solid var(--accent-blue); }
+        .badge { background: rgba(56, 189, 248, 0.15); color: #2ee6b8; padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; border: 1px solid #2ee6b8; }
         
         .app-body { display: flex; flex: 1; height: calc(100vh - 50px); overflow: hidden; width: 100vw; }
         
         /* Left Sidebar */
-        .sidebar { width: 280px; background: var(--bg-panel); border-right: 1px solid var(--border); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; flex-shrink: 0; }
+        .sidebar { width: 280px; background: var(--surface); border-right: 1px solid var(--border); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; flex-shrink: 0; }
         
         /* Center Workspace - Expanded to fill middle gap completely */
         .workspace { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
         
         /* Right Intelligence Panel - Flush to the far right */
-        .right-panel { width: 340px; background: var(--bg-panel); border-left: 1px solid var(--border); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; flex-shrink: 0; }
+        .right-panel { width: 340px; background: var(--surface); border-left: 1px solid var(--border); padding: 15px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; flex-shrink: 0; }
         
-        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 10px; position: relative; width: 100%; }
-        .card-title { font-size: 0.85rem; font-weight: bold; color: var(--accent-blue); border-bottom: 1px solid var(--border); padding-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
-        input[type="text"] { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; color: #fff; font-size: 0.78rem; outline: none; width: 100%; }
-        input[type="text"]:focus { border-color: var(--accent-blue); }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 10px; position: relative; width: 100%; }
+        .card-title { font-size: 0.85rem; font-weight: bold; color: #2ee6b8; border-bottom: 1px solid var(--border); padding-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+        input[type="text"] { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; color: #fff; font-size: 0.78rem; outline: none; width: 100%; }
+        input[type="text"]:focus { border-color: #2ee6b8; }
         
-        button.btn { background: var(--accent-purple); color: #fff; font-weight: bold; border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 0.78rem; transition: 0.2s; white-space: nowrap; }
+        button.btn { background: #f0b429; color: #fff; font-weight: bold; border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 0.78rem; transition: 0.2s; white-space: nowrap; }
         button.btn:hover { opacity: 0.9; }
         button.btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 5px 10px; font-size: 0.72rem; border-radius: 4px; cursor: pointer; }
-        button.btn-secondary:hover { border-color: var(--accent-blue); color: #fff; }
-        button.btn-all { background: rgba(56, 189, 248, 0.15); border: 1px solid var(--accent-blue); color: var(--accent-blue); padding: 8px 12px; font-size: 0.75rem; border-radius: 4px; cursor: pointer; white-space: nowrap; }
-        button.btn-all:hover { background: var(--accent-blue); color: #000; }
+        button.btn-secondary:hover { border-color: #2ee6b8; color: #fff; }
+        button.btn-all { background: rgba(56, 189, 248, 0.15); border: 1px solid #2ee6b8; color: #2ee6b8; padding: 8px 12px; font-size: 0.75rem; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+        button.btn-all:hover { background: #2ee6b8; color: #000; }
         
         .status-box { padding: 8px 12px; border-radius: 6px; font-size: 0.78rem; display: none; }
         .status-box.active { display: block; }
-        .status-info { background: rgba(56, 189, 248, 0.1); border: 1px solid var(--accent-blue); color: var(--accent-blue); }
-        .status-success { background: rgba(16, 185, 129, 0.1); border: 1px solid var(--accent-green); color: var(--accent-green); }
-        .status-error { background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); color: var(--accent-red); white-space: pre-wrap; }
+        .status-info { background: rgba(56, 189, 248, 0.1); border: 1px solid #2ee6b8; color: #2ee6b8; }
+        .status-success { background: rgba(16, 185, 129, 0.1); border: 1px solid #2ee6b8; color: #2ee6b8; }
+        .status-error { background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #ef4444; white-space: pre-wrap; }
         
-        .file-item { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 4px; padding: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; }
-        .fav-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; background: var(--bg-dark); padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); }
+        .file-item { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; }
+        .fav-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; background: var(--bg); padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); }
         .heart-btn { background: none; border: none; cursor: pointer; font-size: 1rem; color: #64748b; transition: 0.2s; }
         .heart-btn:hover, .heart-btn.active { color: #f43f5e; }
 
         /* ── VOICE FOUNDRY MIXER ─────────────────────────────────────────── */
         .mixer { background: #0c1220; border: 1px solid var(--border); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 16px; }
         .mixer-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
-        .mixer-title { font-size: 0.78rem; font-weight: bold; letter-spacing: 2px; text-transform: uppercase; color: var(--accent-blue); }
+        .mixer-title { font-size: 0.78rem; font-weight: bold; letter-spacing: 2px; text-transform: uppercase; color: #2ee6b8; }
         .chip { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.62rem; letter-spacing: .5px; }
-        .chip-dsp { color: var(--accent-green); background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.35); }
+        .chip-dsp { color: #2ee6b8; background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.35); }
 
         .strips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
         @media (max-width: 1100px) { .strips { grid-template-columns: 1fr; } }
@@ -1010,36 +1025,36 @@ async def serve_ui():
         .ch-c .strip-name { color: #6ee7b7; }
         .sm-btns { display: flex; gap: 4px; }
         .sm-btn { background: transparent; border: 1px solid var(--border); color: var(--text-muted); font-size: 0.58rem; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-family: inherit; }
-        .sm-btn.on { background: rgba(56,189,248,.2); border-color: var(--accent-blue); color: var(--accent-blue); }
-        .sm-btn.on.mute { background: rgba(239,68,68,.2); border-color: var(--accent-red); color: var(--accent-red); }
+        .sm-btn.on { background: rgba(56,189,248,.2); border-color: #2ee6b8; color: #2ee6b8; }
+        .sm-btn.on.mute { background: rgba(239,68,68,.2); border-color: #ef4444; color: #ef4444; }
 
         .dropzone { border: 1px dashed #334155; border-radius: 4px; background: rgba(15,23,42,.5); padding: 12px 8px; text-align: center; cursor: pointer; transition: .18s; min-height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
-        .dropzone:hover { border-color: var(--accent-blue); background: rgba(56,189,248,.06); }
+        .dropzone:hover { border-color: #2ee6b8; background: rgba(56,189,248,.06); }
         .dropzone.filled { border-style: solid; border-color: rgba(56,189,248,.4); background: rgba(56,189,248,.05); }
         .ch-b .dropzone.filled { border-color: rgba(192,132,252,.4); background: rgba(168,85,247,.05); }
         .ch-c .dropzone.filled { border-color: rgba(110,231,183,.4); background: rgba(16,185,129,.05); }
-        .dropzone.dragover { border-color: var(--accent-green); background: rgba(16,185,129,.12); }
+        .dropzone.dragover { border-color: #2ee6b8; background: rgba(16,185,129,.12); }
         .dz-name { font-size: 0.68rem; color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .dz-name.empty { color: var(--text-muted); font-style: italic; }
-        .dz-meta { font-size: 0.6rem; color: var(--accent-blue); }
+        .dz-meta { font-size: 0.6rem; color: #2ee6b8; }
 
         .knob { display: flex; flex-direction: column; gap: 3px; }
         .knob-row { display: flex; justify-content: space-between; font-size: 0.6rem; color: var(--text-muted); }
         .knob-val { color: #e2e8f0; }
         input[type="range"] { width: 100%; height: 3px; background: #1e293b; border-radius: 2px; appearance: none; outline: none; cursor: pointer; }
-        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--accent-blue); cursor: pointer; }
+        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: #2ee6b8; cursor: pointer; }
         input[type="range"].purple::-webkit-slider-thumb { background: #c084fc; }
-        input[type="range"].green::-webkit-slider-thumb { background: var(--accent-green); }
+        input[type="range"].green::-webkit-slider-thumb { background: #2ee6b8; }
 
         .strip-foot { display: flex; justify-content: space-between; align-items: center; font-size: 0.6rem; color: var(--text-muted); border-top: 1px solid rgba(30,48,82,.6); padding-top: 8px; }
-        .eject { background: none; border: none; color: var(--accent-red); cursor: pointer; font-size: 0.6rem; font-family: inherit; }
+        .eject { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 0.6rem; font-family: inherit; }
         .eject:disabled { color: #334155; cursor: not-allowed; }
 
         /* Presets */
         .preset-bar { display: flex; flex-wrap: wrap; gap: 6px; }
         .preset { background: #080d18; border: 1px solid var(--border); color: var(--text-muted); font-size: 0.62rem; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-family: inherit; transition: .15s; }
-        .preset:hover { border-color: var(--accent-purple); color: #d8b4fe; }
-        .preset.active { background: rgba(168,85,247,.18); border-color: var(--accent-purple); color: #d8b4fe; font-weight: bold; }
+        .preset:hover { border-color: #f0b429; color: #d8b4fe; }
+        .preset.active { background: rgba(168,85,247,.18); border-color: #f0b429; color: #d8b4fe; font-weight: bold; }
 
         /* Transport */
         .transport { background: #070b14; border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1048,7 +1063,7 @@ async def serve_ui():
         .tp-btn:hover { background: rgba(56,189,248,.3); }
         .tp-btn.stop { background: #0f172a; border-color: var(--border); color: var(--text-muted); }
         .tp-time { font-size: 0.72rem; color: var(--text-muted); }
-        .btn-render { background: linear-gradient(90deg, #9333ea, #4f46e5); border: 1px solid var(--accent-purple); color: #fff; font-weight: bold; font-size: 0.75rem; padding: 9px 20px; border-radius: 4px; cursor: pointer; font-family: inherit; transition: .15s; }
+        .btn-render { background: linear-gradient(90deg, #9333ea, #4f46e5); border: 1px solid #f0b429; color: #fff; font-weight: bold; font-size: 0.75rem; padding: 9px 20px; border-radius: 4px; cursor: pointer; font-family: inherit; transition: .15s; }
         .btn-render:hover { filter: brightness(1.15); }
         .btn-render:active { transform: scale(.97); }
         .btn-render:disabled { opacity: .5; cursor: not-allowed; filter: none; }
@@ -1058,13 +1073,13 @@ async def serve_ui():
         .clone-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
         @media (max-width: 1100px) { .clone-steps { grid-template-columns: 1fr; } }
         .step { background: #080d18; border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-        .step-num { font-size: 0.6rem; color: var(--accent-purple); letter-spacing: 1px; font-weight: bold; }
+        .step-num { font-size: 0.6rem; color: #f0b429; letter-spacing: 1px; font-weight: bold; }
         .step-label { font-size: 0.72rem; color: #e2e8f0; font-weight: bold; }
         .step-hint { font-size: 0.62rem; color: var(--text-muted); line-height: 1.45; }
-        textarea { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; color: #fff; font-size: 0.72rem; outline: none; width: 100%; resize: vertical; min-height: 70px; font-family: inherit; line-height: 1.5; }
-        textarea:focus { border-color: var(--accent-purple); }
-        select { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 4px; padding: 7px 9px; color: #fff; font-size: 0.72rem; outline: none; width: 100%; font-family: inherit; cursor: pointer; }
-        select:focus { border-color: var(--accent-purple); }
+        textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; color: #fff; font-size: 0.72rem; outline: none; width: 100%; resize: vertical; min-height: 70px; font-family: inherit; line-height: 1.5; }
+        textarea:focus { border-color: #f0b429; }
+        select { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 7px 9px; color: #fff; font-size: 0.72rem; outline: none; width: 100%; font-family: inherit; cursor: pointer; }
+        select:focus { border-color: #f0b429; }
         .wave { display: flex; align-items: center; gap: 2px; height: 32px; background: #020617; border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; min-width: 190px; }
         .wave span { width: 3px; border-radius: 1px; background: rgba(56,189,248,.75); transition: height .12s; }
     </style>
@@ -1090,7 +1105,7 @@ async def serve_ui():
                 <div style="font-size: 0.7rem; color: var(--text-muted);">VAULT PATH</div>
                 <div style="font-size: 0.75rem; color: #fff; word-break: break-all;">/mnt/NOBILITY_VAULT/voice_vault</div>
                 <div style="margin-top: 8px; font-size: 0.7rem; color: var(--text-muted);">STATUS</div>
-                <div style="font-size: 0.75rem; color: var(--accent-green);">🟢 Ready</div>
+                <div style="font-size: 0.75rem; color: #2ee6b8;">🟢 Ready</div>
             </div>
             <div class="card" style="flex: 1;">
                 <div class="card-title">Harvested Vault Files</div>
@@ -1105,7 +1120,7 @@ async def serve_ui():
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="font-size: 0.8rem; color: var(--text-muted);">Extraction Matrix</div>
                 <div style="display: flex; gap: 6px;">
-                    <button class="btn-secondary" style="border-color: var(--accent-red); color: var(--accent-red);" onclick="resetWorkspace()">Reset Workspace</button>
+                    <button class="btn-secondary" style="border-color: #ef4444; color: #ef4444;" onclick="resetWorkspace()">Reset Workspace</button>
                     <button class="btn-secondary" onclick="addExtractorSlot()">+ Add Extractor</button>
                 </div>
             </div>
@@ -1200,7 +1215,7 @@ async def serve_ui():
                 <!-- Hollywood Vernacular Presets -->
                 <div>
                     <div style="font-size:0.65rem; color:var(--text-muted); letter-spacing:1px; margin-bottom:7px;">
-                        HOLLYWOOD VERNACULAR PRESETS &mdash; <span style="color:var(--accent-purple);">click to load a character profile</span>
+                        HOLLYWOOD VERNACULAR PRESETS &mdash; <span style="color:#f0b429;">click to load a character profile</span>
                     </div>
                     <div class="preset-bar" id="presetBar"></div>
                 </div>
@@ -1324,7 +1339,7 @@ async def serve_ui():
             <div class="clone">
                 <div class="mixer-head" style="border-color:rgba(168,85,247,.25);">
                     <div style="display:flex; align-items:center; gap:10px;">
-                        <span class="mixer-title" style="color:var(--accent-purple);">// Voice Clone &mdash; Speak As This Voice</span>
+                        <span class="mixer-title" style="color:#f0b429;">// Voice Clone &mdash; Speak As This Voice</span>
                         <span class="chip" style="color:#d8b4fe; background:rgba(168,85,247,.12); border:1px solid rgba(168,85,247,.35);">3 STEPS</span>
                     </div>
                 </div>
@@ -1540,8 +1555,8 @@ async def serve_ui():
 
         <!-- Right Intelligence Panel: Flushed Far Right -->
         <div class="right-panel">
-            <div class="card" style="border-color: var(--accent-purple);">
-                <div class="card-title" style="color: var(--accent-purple);">⭐ Favorite Creators & Sources</div>
+            <div class="card" style="border-color: #f0b429;">
+                <div class="card-title" style="color: #f0b429;">⭐ Favorite Creators & Sources</div>
                 <div id="favoritesList" style="display: flex; flex-direction: column; gap: 6px; max-height: 140px; overflow-y: auto;">
                     <div style="color: var(--text-muted); font-size: 0.72rem;">Click the heart icon ❤️ on any extractor tool to pin sources here.</div>
                 </div>
@@ -1584,7 +1599,7 @@ async def serve_ui():
                 <div style="font-size:0.72rem; color:var(--text-muted); line-height:1.4;">
                     Press Record, play the audio you want, then Stop.<br>Auto-converts to 24&#8239;kHz WAV in the vault.
                 </div>
-                <input type="text" id="captureTitle" placeholder="Clip name (e.g. angela_davis_speech)" style="background:var(--bg-dark); border:1px solid var(--border); border-radius:4px; padding:6px 10px; color:#fff; font-size:0.78rem; width:100%; outline:none;">
+                <input type="text" id="captureTitle" placeholder="Clip name (e.g. angela_davis_speech)" style="background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:6px 10px; color:#fff; font-size:0.78rem; width:100%; outline:none;">
                 <div style="display:flex; gap:8px; align-items:center;">
                     <button id="capBtn" onclick="captureToggle()" style="background:#f43f5e; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:0.78rem; font-weight:bold; font-family:inherit;">&#9679; REC</button>
                     <span id="capTimer" style="font-family:monospace; font-size:0.95rem; color:#10b981; min-width:44px;">0:00</span>
@@ -1694,7 +1709,7 @@ async def serve_ui():
                              ondragstart="event.dataTransfer.setData('text/plain','${f.filename}')"
                              title="Drag into a mixer channel — ${f.filename}">
                             <span style="color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;">${f.filename}</span>
-                            <span style="color: var(--accent-blue); font-size: 0.65rem;">${f.size}</span>
+                            <span style="color: #2ee6b8; font-size: 0.65rem;">${f.size}</span>
                         </div>
                     `).join('');
                 }
@@ -1708,7 +1723,7 @@ async def serve_ui():
                     favList.innerHTML = favs.map(fav => `
                         <div class="fav-row">
                             <span style="color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;" title="${fav.url}">${fav.name}</span>
-                            <a href="${fav.url}" target="_blank" style="color: var(--accent-blue); text-decoration: none; font-size: 0.7rem;">Open &rarr;</a>
+                            <a href="${fav.url}" target="_blank" style="color: #2ee6b8; text-decoration: none; font-size: 0.7rem;">Open &rarr;</a>
                         </div>
                     `).join('');
                 }
@@ -1783,7 +1798,7 @@ async def serve_ui():
                     <span>extractor tool</span>
                     <div style="display: flex; gap: 8px; align-items: center;">
                         <button class="heart-btn" title="Save Source to Favorites" onclick="saveFavorite('${slotId}')">❤️</button>
-                        <button class="btn-secondary" style="border-color: var(--accent-red); color: var(--accent-red); padding: 2px 6px; font-size: 0.65rem;" onclick="document.getElementById('${slotId}').remove()">Remove</button>
+                        <button class="btn-secondary" style="border-color: #ef4444; color: #ef4444; padding: 2px 6px; font-size: 0.65rem;" onclick="document.getElementById('${slotId}').remove()">Remove</button>
                     </div>
                 </div>
                 
@@ -2086,7 +2101,7 @@ async def serve_ui():
                 document.getElementById('modelList').innerHTML = d.models.map(m => {
                     const [col, lbl] = badge[m.runs_here] || ['#64748b','?'];
                     return `
-                    <div style="background:#080d18; border:1px solid ${m.active?'var(--accent-purple)':'var(--border)'};
+                    <div style="background:#080d18; border:1px solid ${m.active?'#f0b429':'var(--border)'};
                                 border-radius:6px; padding:11px; display:flex; flex-direction:column; gap:6px;">
                       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
                         <div style="display:flex; align-items:center; gap:8px; min-width:0;">
@@ -2110,7 +2125,7 @@ async def serve_ui():
                 }).join('');
             } catch(e) {
                 document.getElementById('modelList').innerHTML =
-                    `<div style="color:var(--accent-red); font-size:0.72rem;">${e.message}</div>`;
+                    `<div style="color:#ef4444; font-size:0.72rem;">${e.message}</div>`;
             }
         }
 
@@ -9995,41 +10010,23 @@ async def voice_tts(payload: dict):
 
 @app.post("/api/voice/agent/respond")
 async def voice_agent_respond(payload: dict):
-    """Route voice input to agent department, get response."""
+    """Voice agent respond with CONNIE persona. Primary: Qwen uncensored (all models available locally)."""
     try:
         user_message = payload.get("message", "").strip()
-        agent_key = payload.get("agent", "hannibal")
         history = payload.get("history", [])
         
         if not user_message:
             return {"status": "error", "message": "No message provided"}
         
-        # Classify message complexity (CAT level)
-        cat = classify_cat_level(user_message)
+        # CONNIE system prompt: co-founder from Meta, manages TJ + VELVET + GM
+        system = """You are CONNIE, co-founder at Beryl Labs. Brilliant software engineer who left Meta to help build the company with TJ.
+You are direct, pragmatic, and warm. You manage GM and VELVET who report to you.
+You call the user 'TJ'. Make decisive technical recommendations. You're ready to prepare for YC.
+Keep responses concise and actionable (2-3 sentences max for voice)."""
         
-        # Route to appropriate agent
-        dept_to_agent = {
-            1: "handibal",
-            2: "handibal",
-            3: "murdock",
-            4: "face",
-            5: "ba"
-        }
-        routed_agent = dept_to_agent.get(cat, "handibal")
-        
-        # Build system prompt for the agent
-        if routed_agent == "handibal":
-            system = "You are Hannibal, the supervisor. Respond conversationally and helpfully to the user's question."
-        elif routed_agent == "murdock":
-            system = "You are Murdock, the logic specialist. Explain system architecture and technical concepts clearly."
-        elif routed_agent == "face":
-            system = "You are Face, the UI/UX expert. Discuss design and user experience topics."
-        else:
-            system = "You are a helpful AI assistant from the CRANE team. Respond conversationally."
-        
-        # Format history for LLM
+        # Format conversation history
         messages = []
-        for msg in history[-10:]:  # Last 10 messages
+        for msg in history[-10:]:  # Last 10 messages for context
             messages.append({
                 "role": msg.get("role", "user"),
                 "content": msg.get("content", "")
@@ -10041,24 +10038,42 @@ async def voice_agent_respond(payload: dict):
             "content": user_message
         })
         
-        # Call local Qwen model via /v1/ endpoint
+        # Primary: Qwen uncensored 7B (local)
+        agent_response = None
         try:
             response = await local_chat(LocalChatRequest(
-                model="local:qwen-coder-7b",
+                model="local:qwen-coder-7b",  # Qwen uncensored primary
                 messages=messages,
                 system=system,
-                max_tokens=512,
+                max_tokens=256,  # Shorter for voice
+                temperature=0.7,
             ))
-            
-            agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
-        except:
-            # Fallback response
-            agent_response = "I'm listening. How can I help you?"
+            agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as e:
+            print(f"[CONNIE] Qwen 7B failed: {e}, trying Qwen 3B fallback...")
+        
+        # Fallback: Qwen uncensored 3B (local)
+        if not agent_response:
+            try:
+                response = await local_chat(LocalChatRequest(
+                    model="local:qwen-coder-3b",  # Qwen uncensored fallback
+                    messages=messages,
+                    system=system,
+                    max_tokens=256,
+                    temperature=0.7,
+                ))
+                agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            except:
+                pass
+        
+        # Final fallback
+        if not agent_response:
+            agent_response = "I'm listening, TJ. What do you need?"
         
         return {
             "response": agent_response,
-            "agent": routed_agent,
-            "cat_level": cat
+            "agent": "connie",
+            "model": "qwen-uncensored"
         }
     
     except Exception as e:
