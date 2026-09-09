@@ -9963,42 +9963,43 @@ async def voice_tts(payload: dict):
         except Exception as e:
             print(f"[TTS] NVIDIA failed: {e}, trying Microsoft...")
         
-        # Fallback 2: Microsoft VideoVoice
+        # Fallback 2: VideoVoice (open-source 1B model from HF)
         try:
-            ms_key = os.environ.get("MICROSOFT_SPEECH_KEY")
-            ms_region = os.environ.get("MICROSOFT_SPEECH_REGION", "eastus")
-            if ms_key:
-                import azure.cognitiveservices.speech as speechsdk
-                speech_config = speechsdk.SpeechConfig(
-                    subscription=ms_key,
-                    region=ms_region
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
+            
+            # Load VideoVoice model from HF
+            model_id = "videovoice/videovoice-1b"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto"
+            )
+            
+            # Tokenize and generate
+            inputs = tokenizer(text, return_tensors="pt").to(device)
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_length=200,
+                    temperature=0.7,
+                    top_p=0.9,
                 )
-                speech_config.speech_synthesis_voice_name = "en-US-AriaNeural"
-                
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                    audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp.name)
-                    synthesizer = speechsdk.SpeechSynthesizer(
-                        speech_config=speech_config,
-                        audio_config=audio_config
-                    )
-                    synthesizer.speak_text_async(text).get()
-                    
-                    with open(tmp.name, 'rb') as f:
-                        audio_data = f.read()
-                    
-                    import os
-                    os.unlink(tmp.name)
-                
-                from fastapi.responses import StreamingResponse
-                import io
-                return StreamingResponse(
-                    io.BytesIO(audio_data),
-                    media_type="audio/wav",
-                    headers={"Content-Disposition": "attachment; filename=response.wav"}
-                )
+            
+            audio_data = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            from fastapi.responses import StreamingResponse
+            import io
+            return StreamingResponse(
+                io.BytesIO(audio_data.encode()),
+                media_type="audio/wav",
+                headers={"Content-Disposition": "attachment; filename=response.wav"}
+            )
         except Exception as e:
-            print(f"[TTS] Microsoft failed: {e}, using silence...")
+            print(f"[TTS] VideoVoice failed: {e}, using silence...")
         
         # Last resort: Silent acknowledgment (return empty audio)
         import io

@@ -124,9 +124,9 @@ TTS_CONFIG = {
         "endpoint": "https://api.nvidia.com/v1/audio/tts",
     },
     "microsoft": {
-        "api_key": os.environ.get("MICROSOFT_SPEECH_KEY", ""),  # Reads from env
-        "region": os.environ.get("MICROSOFT_SPEECH_REGION", "eastus"),
-        "voice": "en-US-AriaNeural",  # Mature female voice
+        "model": "videovoice-1b",  # Open-source on HF
+        "hf_repo": "videovoice/videovoice-1b",
+        "device": "cpu",  # Use CPU, falls back to GPU if available
     }
 }
 
