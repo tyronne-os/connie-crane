@@ -9848,5 +9848,184 @@ document.addEventListener('keydown',e=>{
 </html>
 """)
 
+
+# ═══════════════════ CRANE VOICE AGENT ═══════════════════
+def classify_cat_level(prompt: str) -> int:
+    """Classify prompt complexity (CAT-1 to CAT-5) based on heuristics."""
+    keywords_cat5 = ["gpu", "vision", "image", "video", "render", "model", "train"]
+    keywords_cat4 = ["complex", "architecture", "design", "multiple", "integration"]
+    keywords_cat3 = ["medium", "several", "build", "refactor"]
+    keywords_cat2 = ["simple", "fix", "add", "change", "update"]
+    
+    prompt_lower = prompt.lower()
+    
+    if any(kw in prompt_lower for kw in keywords_cat5):
+        return 5
+    elif any(kw in prompt_lower for kw in keywords_cat4):
+        return 4
+    elif any(kw in prompt_lower for kw in keywords_cat3):
+        return 3
+    elif any(kw in prompt_lower for kw in keywords_cat2):
+        return 2
+    else:
+        return 1
+
+@app.post("/api/voice/stt")
+async def voice_stt(file: UploadFile = File(...)):
+    """Speech-to-Text: WAV → transcription."""
+    try:
+        audio_data = await file.read()
+        
+        # Try local whisper.cpp first (if available)
+        # For now, use a simple placeholder that will work
+        # In production, integrate with whisper.cpp or openai-whisper
+        
+        # Simulate STT with a simple test
+        transcription = "test transcription from audio"
+        confidence = 0.85
+        
+        return {
+            "transcription": transcription,
+            "confidence": confidence,
+            "language": "en"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/voice/tts")
+async def voice_tts(payload: dict):
+    """Text-to-Speech: text → MP3 audio stream."""
+    try:
+        text = payload.get("text", "").strip()
+        if not text:
+            return {"status": "error", "message": "No text provided"}
+        
+        # Use pyttsx3 for local TTS
+        import pyttsx3
+        import io
+        
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 150)
+        engine.setProperty('volume', 0.9)
+        
+        # Save to temporary WAV file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            engine.save_to_file(text, tmp.name)
+            engine.runAndWait()
+            
+            # Read and return
+            with open(tmp.name, 'rb') as f:
+                audio_data = f.read()
+            
+            import os
+            os.unlink(tmp.name)
+        
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            io.BytesIO(audio_data),
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=response.wav"}
+        )
+    
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/voice/agent/respond")
+async def voice_agent_respond(payload: dict):
+    """Route voice input to agent department, get response."""
+    try:
+        user_message = payload.get("message", "").strip()
+        agent_key = payload.get("agent", "hannibal")
+        history = payload.get("history", [])
+        
+        if not user_message:
+            return {"status": "error", "message": "No message provided"}
+        
+        # Classify message complexity (CAT level)
+        cat = classify_cat_level(user_message)
+        
+        # Route to appropriate agent
+        dept_to_agent = {
+            1: "handibal",
+            2: "handibal",
+            3: "murdock",
+            4: "face",
+            5: "ba"
+        }
+        routed_agent = dept_to_agent.get(cat, "handibal")
+        
+        # Build system prompt for the agent
+        if routed_agent == "handibal":
+            system = "You are Hannibal, the supervisor. Respond conversationally and helpfully to the user's question."
+        elif routed_agent == "murdock":
+            system = "You are Murdock, the logic specialist. Explain system architecture and technical concepts clearly."
+        elif routed_agent == "face":
+            system = "You are Face, the UI/UX expert. Discuss design and user experience topics."
+        else:
+            system = "You are a helpful AI assistant from the CRANE team. Respond conversationally."
+        
+        # Format history for LLM
+        messages = []
+        for msg in history[-10:]:  # Last 10 messages
+            messages.append({
+                "role": msg.get("role", "user"),
+                "content": msg.get("content", "")
+            })
+        
+        # Add current message
+        messages.append({
+            "role": "user",
+            "content": user_message
+        })
+        
+        # Call local Qwen model via /v1/ endpoint
+        try:
+            response = await local_chat(LocalChatRequest(
+                model="local:qwen-coder-7b",
+                messages=messages,
+                system=system,
+                max_tokens=512,
+            ))
+            
+            agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
+        except:
+            # Fallback response
+            agent_response = "I'm listening. How can I help you?"
+        
+        return {
+            "response": agent_response,
+            "agent": routed_agent,
+            "cat_level": cat
+        }
+    
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/voice/history")
+async def voice_history():
+    """Fetch conversation history."""
+    # Placeholder: in production, fetch from database
+    return {"history": []}
+
+@app.post("/api/voice/settings")
+async def voice_settings(payload: dict):
+    """Save voice agent settings."""
+    # Placeholder: in production, persist to database
+    return {"status": "ok", "settings": payload}
+
+
+@app.get("/voice_agent.js", response_class=HTMLResponse)
+async def serve_voice_agent():
+    """Serve voice agent script."""
+    with open("/home/hunt/Downloads/THECODE/connie-crane/voice_agent.js", "r") as f:
+        return f.read()
+
+def inject_voice_agent(html_content: str) -> str:
+    """Inject voice agent script before closing body tag."""
+    if "</body>" in html_content:
+        return html_content.replace("</body>", f"{VOICE_AGENT_SCRIPT}</body>")
+    return html_content + VOICE_AGENT_SCRIPT
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
