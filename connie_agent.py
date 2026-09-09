@@ -113,11 +113,21 @@ class KnowledgeBase:
 TTS_CONFIG = {
     "primary": "pyttsx3_female",  # Local, no network needed
     "fallbacks": [
-        "elevenlabs_mature_female",  # API-based fallback
-        "azure_speech_service",       # Another API option
-        "silence",                    # Last resort: acknowledge but no audio
+        "nvidia_tts_small",         # NVIDIA small model (via API key)
+        "microsoft_videovice_latest", # Microsoft VideoVoice (latest)
+        "silence",                  # Last resort: acknowledge but no audio
     ],
-    "never_use": ["browser_default", "male_voices"],  # Explicit exclusions
+    "never_use": ["elevenlabs", "browser_default", "male_voices"],  # Explicit exclusions
+    "nvidia": {
+        "api_key": os.environ.get("NVIDIA_API_KEY", ""),  # Reads from env
+        "model": "nvidia/neva-tts",  # NVIDIA small TTS model
+        "endpoint": "https://api.nvidia.com/v1/audio/tts",
+    },
+    "microsoft": {
+        "api_key": os.environ.get("MICROSOFT_SPEECH_KEY", ""),  # Reads from env
+        "region": os.environ.get("MICROSOFT_SPEECH_REGION", "eastus"),
+        "voice": "en-US-AriaNeural",  # Mature female voice
+    }
 }
 
 def get_connie_system_prompt(knowledge_context: str = "") -> str:

@@ -9894,38 +9894,120 @@ async def voice_stt(file: UploadFile = File(...)):
 
 @app.post("/api/voice/tts")
 async def voice_tts(payload: dict):
-    """Text-to-Speech: text → MP3 audio stream."""
+    """Text-to-Speech with fallback chain: pyttsx3 → NVIDIA → Microsoft VideoVoice → silence."""
     try:
         text = payload.get("text", "").strip()
         if not text:
             return {"status": "error", "message": "No text provided"}
         
-        # Use pyttsx3 for local TTS
-        import pyttsx3
+        # Try primary: pyttsx3 local TTS
+        try:
+            import pyttsx3
+            import tempfile
+            
+            engine = pyttsx3.init()
+            engine.setProperty('rate', 150)
+            engine.setProperty('volume', 0.9)
+            
+            # Try to set female voice
+            voices = engine.getProperty('voices')
+            if voices:
+                engine.setProperty('voice', voices[1].id if len(voices) > 1 else voices[0].id)
+            
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                engine.save_to_file(text, tmp.name)
+                engine.runAndWait()
+                
+                with open(tmp.name, 'rb') as f:
+                    audio_data = f.read()
+                
+                import os
+                os.unlink(tmp.name)
+            
+            from fastapi.responses import StreamingResponse
+            import io
+            return StreamingResponse(
+                io.BytesIO(audio_data),
+                media_type="audio/wav",
+                headers={"Content-Disposition": "attachment; filename=response.wav"}
+            )
+        except Exception as e:
+            print(f"[TTS] pyttsx3 failed: {e}, trying NVIDIA...")
+        
+        # Fallback 1: NVIDIA TTS
+        try:
+            nvidia_key = os.environ.get("NVIDIA_API_KEY")
+            if nvidia_key:
+                import requests
+                res = requests.post(
+                    "https://api.nvidia.com/v1/audio/tts",
+                    headers={
+                        "Authorization": f"Bearer {nvidia_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "text": text,
+                        "voice": "female_1",
+                        "sample_rate": 22050
+                    },
+                    timeout=10
+                )
+                if res.status_code == 200:
+                    from fastapi.responses import StreamingResponse
+                    import io
+                    return StreamingResponse(
+                        io.BytesIO(res.content),
+                        media_type="audio/wav",
+                        headers={"Content-Disposition": "attachment; filename=response.wav"}
+                    )
+        except Exception as e:
+            print(f"[TTS] NVIDIA failed: {e}, trying Microsoft...")
+        
+        # Fallback 2: Microsoft VideoVoice
+        try:
+            ms_key = os.environ.get("MICROSOFT_SPEECH_KEY")
+            ms_region = os.environ.get("MICROSOFT_SPEECH_REGION", "eastus")
+            if ms_key:
+                import azure.cognitiveservices.speech as speechsdk
+                speech_config = speechsdk.SpeechConfig(
+                    subscription=ms_key,
+                    region=ms_region
+                )
+                speech_config.speech_synthesis_voice_name = "en-US-AriaNeural"
+                
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    audio_config = speechsdk.audio.AudioOutputConfig(filename=tmp.name)
+                    synthesizer = speechsdk.SpeechSynthesizer(
+                        speech_config=speech_config,
+                        audio_config=audio_config
+                    )
+                    synthesizer.speak_text_async(text).get()
+                    
+                    with open(tmp.name, 'rb') as f:
+                        audio_data = f.read()
+                    
+                    import os
+                    os.unlink(tmp.name)
+                
+                from fastapi.responses import StreamingResponse
+                import io
+                return StreamingResponse(
+                    io.BytesIO(audio_data),
+                    media_type="audio/wav",
+                    headers={"Content-Disposition": "attachment; filename=response.wav"}
+                )
+        except Exception as e:
+            print(f"[TTS] Microsoft failed: {e}, using silence...")
+        
+        # Last resort: Silent acknowledgment (return empty audio)
         import io
-        
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 150)
-        engine.setProperty('volume', 0.9)
-        
-        # Save to temporary WAV file
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            engine.save_to_file(text, tmp.name)
-            engine.runAndWait()
-            
-            # Read and return
-            with open(tmp.name, 'rb') as f:
-                audio_data = f.read()
-            
-            import os
-            os.unlink(tmp.name)
-        
         from fastapi.responses import StreamingResponse
+        silent_audio = b''  # Empty audio data
         return StreamingResponse(
-            io.BytesIO(audio_data),
+            io.BytesIO(silent_audio),
             media_type="audio/wav",
-            headers={"Content-Disposition": "attachment; filename=response.wav"}
+            headers={"Content-Disposition": "attachment; filename=silent.wav"}
         )
     
     except Exception as e:
