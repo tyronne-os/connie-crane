@@ -10015,8 +10015,54 @@ async def voice_settings(payload: dict):
     return {"status": "ok", "settings": payload}
 
 
-@app.get("/voice_agent.js", response_class=HTMLResponse)
-async def serve_voice_agent():
+from connie_agent import CONNIE_PERSONA, KnowledgeBase, get_connie_system_prompt, format_connie_response
+
+# Initialize CONNIE's knowledge base
+connie_kb = KnowledgeBase()
+
+@app.post("/api/connie/kb/upload")
+async def connie_kb_upload(file: UploadFile = File(...), file_name: str = Form(...)):
+    """Upload document to CONNIE's knowledge base."""
+    try:
+        content = await file.read()
+        content_str = content.decode('utf-8', errors='ignore')
+        
+        doc_id = connie_kb.add_document(file_name or file.filename, content_str)
+        
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "file_name": file.filename,
+            "size": len(content)
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/connie/kb/list")
+async def connie_kb_list():
+    """List all documents in CONNIE's knowledge base."""
+    return {
+        "documents": connie_kb.index.get("documents", []),
+        "count": len(connie_kb.index.get("documents", []))
+    }
+
+@app.post("/api/connie/kb/delete/{doc_id}")
+async def connie_kb_delete(doc_id: str):
+    """Delete document from knowledge base."""
+    try:
+        connie_kb.index["documents"] = [
+            d for d in connie_kb.index["documents"] if d["id"] != doc_id
+        ]
+        connie_kb.save_index()
+        
+        import os
+        doc_path = connie_kb.storage_dir / doc_id
+        if os.path.exists(doc_path):
+            os.remove(doc_path)
+        
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
     """Serve voice agent script."""
     with open("/home/hunt/Downloads/THECODE/connie-crane/voice_agent.js", "r") as f:
         return f.read()
