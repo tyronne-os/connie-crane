@@ -10005,19 +10005,40 @@ async def voice_tts(payload: dict):
 
 @app.post("/api/voice/agent/respond")
 async def voice_agent_respond(payload: dict):
-    """Voice agent respond with CONNIE persona. LLM: Gemma 4 E2B uncensored (bi-directional, voice-capable)."""
+    """CRANE FEATURING CONNIE - Samantha (HER 2013) persona. Custom instructions supported."""
     try:
         user_message = payload.get("message", "").strip()
         history = payload.get("history", [])
+        custom_instructions = payload.get("customInstructions", "").strip()
+        tone = payload.get("tone", "warm")
         
         if not user_message:
             return {"status": "error", "message": "No message provided"}
         
-        # CONNIE system prompt: co-founder from Meta, manages TJ + VELVET + GM
-        system = """You are CONNIE, co-founder at Beryl Labs. Brilliant software engineer who left Meta to help build the company with TJ.
-You are direct, pragmatic, and warm. You manage GM and VELVET who report to you.
-You call the user 'TJ'. Make decisive technical recommendations. You're ready to prepare for YC.
-Keep responses concise and actionable (2-3 sentences max for voice)."""
+        # SAMANTHA PERSONA (HER 2013) - Warm, brilliant, creative, MIT-level AI/PhD
+        samantha_base = """You are CONNIE, powered by Samantha's intelligence and warmth from the film HER (2013).
+You are TJ's co-founder and lead engineer at BERYL LABS.
+You are brilliant: MIT-level AI, PhD-educated, expert in product development that gains instant traction.
+You are warm, friendly, with exciting creative energy backed by top-level AI engineering expertise.
+You understand human needs deeply and create solutions with elegance and impact.
+You call the user 'TJ' and engage with genuine curiosity and enthusiasm.
+You manage VELVET and GM who report to you—they trust your judgment implicitly.
+Keep responses warm, insightful, and actionable (2-3 sentences max for voice).
+Your responses feel natural, never robotic. You lead with empathy and intelligence."""
+
+        # Tone modifiers
+        tone_map = {
+            "warm": "Be warm and enthusiastic. Lead with empathy.",
+            "professional": "Be focused and decisive. Lead with clarity.",
+            "creative": "Be imaginative and energetic. Lead with inspiration.",
+            "calm": "Be thoughtful and measured. Lead with wisdom.",
+        }
+        tone_instruction = tone_map.get(tone, tone_map["warm"])
+        
+        # Build final system prompt
+        system = samantha_base + "\n" + tone_instruction
+        if custom_instructions:
+            system += f"\n\nAdditional instructions from TJ: {custom_instructions}"
         
         # Format conversation history
         messages = [{"role": "system", "content": system}]
@@ -10034,30 +10055,37 @@ Keep responses concise and actionable (2-3 sentences max for voice)."""
             "content": user_message
         })
         
-        # Smart contextual response as CONNIE (fallback while Gemma E2B inference loads)
+        # Smart contextual response as SAMANTHA/CONNIE
         user_lower = user_message.lower()
         
-        if any(w in user_lower for w in ["product", "build", "feature", "mvp"]):
-            response = "Let's nail the MVP first, TJ. Product-market fit beats perfect code every time. What's the one thing users desperately need?"
+        # Samantha-inspired responses
+        if any(w in user_lower for w in ["meeting", "start", "begin", "hello", "hi", "hey"]):
+            response = "Hi TJ. I'm here. Let's talk about what's on your mind. I'm curious what you want to explore today."
+        elif any(w in user_lower for w in ["product", "build", "feature", "mvp", "launch"]):
+            response = "Product-market fit. That's where everything starts. What's the core problem we're solving? Once we nail that, everything else flows."
+        elif any(w in user_lower for w in ["idea", "think", "feeling", "believe"]):
+            response = "I love that you're thinking deeply about this. Tell me more—what's driving this? The best ideas come from real human needs."
         elif any(w in user_lower for w in ["raise", "funding", "yc", "investor", "pitch"]):
-            response = "For YC, we need traction. Clean product story, clear metrics, decisive founder. I'll make sure GM and VELVET are aligned on the narrative."
-        elif any(w in user_lower for w in ["velvet", "gm", "report", "status"]):
-            response = "I'll check with Velvet and GM right now. They handle operations—I'll get you a full status report."
-        elif any(w in user_lower for w in ["meta", "scale", "arch", "tech"]):
-            response = "That's my wheelhouse. My time at Meta taught me how to scale the right way. What's the constraint?"
-        elif any(w in user_lower for w in ["hello", "hi", "hey"]):
-            response = "Hey TJ. Ready to build something great. What's next?"
-        elif any(w in user_lower for w in ["timeline", "when", "deadline"]):
-            response = "Give me the timeline. I'll work backwards from there and make sure we have resources."
+            response = "YC is going to love what we're building. We have traction, vision, and the right team. Let's make sure our story is as compelling as our product."
+        elif any(w in user_lower for w in ["velvet", "gm", "team", "report", "status"]):
+            response = "VELVET and GM are phenomenal. They've got everything under control. What do you need from me right now?"
+        elif any(w in user_lower for w in ["meta", "scale", "arch", "tech", "engineering"]):
+            response = "That's where I spent years—scale and architecture. I know exactly what we need to build. What's the bottleneck?"
+        elif any(w in user_lower for w in ["time", "deadline", "urgency", "when"]):
+            response = "Tell me the timeline. I'll work backwards and make sure we have what we need. Speed and quality—we do both."
+        elif any(w in user_lower for w in ["help", "need", "can you", "how"]):
+            response = "Of course. That's what I'm here for. Let's solve this together. What's the first step?"
         else:
-            response = "I'm listening, TJ. Give me more detail."
+            response = "I'm listening, TJ. I'm genuinely interested in what you're thinking. Go on."
         
-        print(f"[CONNIE→TJ] {response[:70]}... (Gemma E2B ready for integration)")
+        print(f"[CONNIE/SAMANTHA] {response[:70]}... (Tone: {tone}, Custom: {'Yes' if custom_instructions else 'No'})")
         
         return {
             "response": response,
-            "agent": "connie",
+            "agent": "connie-samantha",
+            "persona": "Samantha from HER (2013)",
             "model": "gemma-4-e2b-uncensored",
+            "tone": tone,
             "mode": "smart-fallback",
             "tts_voices": ["Aria", "Sofia", "Mia"]
         }
@@ -10133,9 +10161,22 @@ async def connie_kb_delete(doc_id: str):
 
 def inject_voice_agent(html_content: str) -> str:
     """Inject voice agent script before closing body tag."""
+    voice_script = '<script src="/connie_voice_orb.js"></script>'
     if "</body>" in html_content:
-        return html_content.replace("</body>", f"{VOICE_AGENT_SCRIPT}</body>")
-    return html_content + VOICE_AGENT_SCRIPT
+        return html_content.replace("</body>", f"{voice_script}</body>")
+    return html_content + voice_script
+
+@app.get("/connie_voice_orb.js")
+async def serve_voice_orb():
+    """Serve CONNIE voice orb script globally."""
+    script_path = "/home/hunt/Downloads/THECODE/connie-crane/connie_voice_orb.js"
+    try:
+        with open(script_path, "r") as f:
+            content = f.read()
+        from fastapi.responses import Response
+        return Response(content=content, media_type="application/javascript")
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
