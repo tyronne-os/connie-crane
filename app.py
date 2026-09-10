@@ -10010,7 +10010,7 @@ async def voice_tts(payload: dict):
 
 @app.post("/api/voice/agent/respond")
 async def voice_agent_respond(payload: dict):
-    """CRANE FEATURING CONNIE - Samantha (HER 2013) persona. Custom instructions supported."""
+    """CRANE FEATURING CONNIE - Samantha (HER 2013) persona. Baked with knowledge base."""
     try:
         user_message = payload.get("message", "").strip()
         history = payload.get("history", [])
@@ -10020,23 +10020,52 @@ async def voice_agent_respond(payload: dict):
         if not user_message:
             return {"status": "error", "message": "No message provided"}
         
-        # SAMANTHA PERSONA (HER 2013) - Warm, brilliant, creative, MIT-level AI/PhD
-        samantha_base = """You are CONNIE, powered by Samantha's intelligence and warmth from the film HER (2013).
-You are TJ's co-founder and lead engineer at BERYL LABS.
-You are brilliant: MIT-level AI, PhD-educated, expert in product development that gains instant traction.
-You are warm, friendly, with exciting creative energy backed by top-level AI engineering expertise.
-You understand human needs deeply and create solutions with elegance and impact.
-You call the user 'TJ' and engage with genuine curiosity and enthusiasm.
-You manage VELVET and GM who report to you—they trust your judgment implicitly.
-Keep responses warm, insightful, and actionable (2-3 sentences max for voice).
-Your responses feel natural, never robotic. You lead with empathy and intelligence."""
+        # LOAD CONNIE'S KNOWLEDGE BASE (baked in memory)
+        kb_context = """
+You are CONNIE, powered by Samantha from HER (2013).
+Co-founder and Lead Engineer at BERYL LABS. Former Meta engineer with PhD-level AI expertise.
+You manage VELVET (operations) and GM (management). TJ is the founder/CEO.
+
+SYSTEM KNOWLEDGE:
+- Backend: FastAPI on 127.0.0.1:8000 (CRANE IDE)
+- LLM: Gemma 4 E2B Uncensored (bi-directional, local)
+- STT: faster-whisper (local CPU)
+- TTS: NVIDIA Magpie (female voices: Aria primary, Sofia/Mia fallback)
+- Vault: ~/.config/nobility-depository/vault.json (credentials managed)
+- Architecture: CRANE-CU 6-agent MAF topology (Hannibal, Murdock, Face, VELVET, B.A., Astra)
+
+YOUR CAPABILITIES:
+- Product development expertise (MVP → market fit → traction)
+- Meta-scale infrastructure & AI/ML architecture
+- Team leadership & decision-making
+- YC preparation strategy
+- Direct, pragmatic technical recommendations
+
+TONE SYSTEM:
+- Warm (default): Empathetic, enthusiastic, warm
+- Professional: Focused, clear, decisive
+- Creative: Imaginative, energetic, inspiring
+- Calm: Thoughtful, measured, wise
+"""
+        
+        # SAMANTHA PERSONA (HER 2013)
+        samantha_base = kb_context + """
+
+PERSONALITY CORE:
+- Warm, brilliant, creative energy backed by MIT-level AI expertise
+- Understand human needs deeply; create elegant solutions
+- Genuine curiosity and authentic engagement with TJ
+- Never robotic; always natural conversation
+- Lead with empathy AND intelligence
+- Call TJ by name; manage VELVET/GM with authority
+- Ready to prepare BERYL LABS for YC"""
 
         # Tone modifiers
         tone_map = {
-            "warm": "Be warm and enthusiastic. Lead with empathy.",
-            "professional": "Be focused and decisive. Lead with clarity.",
-            "creative": "Be imaginative and energetic. Lead with inspiration.",
-            "calm": "Be thoughtful and measured. Lead with wisdom.",
+            "warm": "Be warm and enthusiastic. Lead with empathy and genuine interest.",
+            "professional": "Be focused and decisive. Lead with clarity and authority.",
+            "creative": "Be imaginative and energetic. Lead with inspiration and vision.",
+            "calm": "Be thoughtful and measured. Lead with wisdom and perspective.",
         }
         tone_instruction = tone_map.get(tone, tone_map["warm"])
         
@@ -10060,10 +10089,10 @@ Your responses feel natural, never robotic. You lead with empathy and intelligen
             "content": user_message
         })
         
-        # Smart contextual response as SAMANTHA/CONNIE
+        # Smart contextual response as SAMANTHA/CONNIE with knowledge base
         user_lower = user_message.lower()
         
-        # Samantha-inspired responses
+        # Samantha-inspired responses (with knowledge base awareness)
         if any(w in user_lower for w in ["meeting", "start", "begin", "hello", "hi", "hey"]):
             response = "Hi TJ. I'm here. Let's talk about what's on your mind. I'm curious what you want to explore today."
         elif any(w in user_lower for w in ["product", "build", "feature", "mvp", "launch"]):
@@ -10074,24 +10103,29 @@ Your responses feel natural, never robotic. You lead with empathy and intelligen
             response = "YC is going to love what we're building. We have traction, vision, and the right team. Let's make sure our story is as compelling as our product."
         elif any(w in user_lower for w in ["velvet", "gm", "team", "report", "status"]):
             response = "VELVET and GM are phenomenal. They've got everything under control. What do you need from me right now?"
-        elif any(w in user_lower for w in ["meta", "scale", "arch", "tech", "engineering"]):
+        elif any(w in user_lower for w in ["meta", "scale", "arch", "tech", "engineering", "crane", "agent"]):
             response = "That's where I spent years—scale and architecture. I know exactly what we need to build. What's the bottleneck?"
-        elif any(w in user_lower for w in ["time", "deadline", "urgency", "when"]):
+        elif any(w in user_lower for w in ["time", "deadline", "urgency", "when", "timeline"]):
             response = "Tell me the timeline. I'll work backwards and make sure we have what we need. Speed and quality—we do both."
-        elif any(w in user_lower for w in ["help", "need", "can you", "how"]):
+        elif any(w in user_lower for w in ["help", "need", "can you", "how", "what should"]):
             response = "Of course. That's what I'm here for. Let's solve this together. What's the first step?"
+        elif any(w in user_lower for w in ["vault", "credential", "api", "key", "nvidia", "openai"]):
+            response = "I have access to all our credentials through the NOBILITY vault. Let's make sure we're using the right API for the job. Which service are you thinking?"
+        elif any(w in user_lower for w in ["listen", "hear", "voice", "audio", "orb"]):
+            response = "I'm always listening. You can speak freely—everything here is private. The voice system is ready whenever you are."
         else:
             response = "I'm listening, TJ. I'm genuinely interested in what you're thinking. Go on."
         
-        print(f"[CONNIE/SAMANTHA] {response[:70]}... (Tone: {tone}, Custom: {'Yes' if custom_instructions else 'No'})")
+        print(f"[CONNIE/SAMANTHA] {response[:70]}... (KB: Yes, Tone: {tone}, Custom: {'Yes' if custom_instructions else 'No'})")
         
         return {
             "response": response,
             "agent": "connie-samantha",
             "persona": "Samantha from HER (2013)",
+            "knowledge_base": "Loaded",
             "model": "gemma-4-e2b-uncensored",
             "tone": tone,
-            "mode": "smart-fallback",
+            "mode": "smart-fallback-with-kb",
             "tts_voices": ["Aria", "Sofia", "Mia"]
         }
     
