@@ -9934,9 +9934,13 @@ async def voice_tts(payload: dict):
             "Magpie-Multilingual.EN-US.Aria.Calm",   # Fallback 3 (emotional variant)
         ]
         
-        nvidia_key = os.environ.get("NVIDIA_API_KEY")
+        nvidia_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_NIM_API_KEY")
         if nvidia_key:
             import requests
+            import urllib3
+            # Disable SSL verification for local dev (NVIDIA API SSL cert issue)
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
             for voice_name in female_voices:
                 try:
                     res = requests.post(
@@ -9951,7 +9955,8 @@ async def voice_tts(payload: dict):
                             "sample_rate": 24000,
                             "language_code": "en-US"
                         },
-                        timeout=15
+                        timeout=15,
+                        verify=False  # Disable SSL verification for local dev
                     )
                     if res.status_code == 200:
                         from fastapi.responses import StreamingResponse
