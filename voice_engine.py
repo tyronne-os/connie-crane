@@ -110,20 +110,7 @@ CATALOG = {
         "note": "Strong zero-shot cloning from ~6s of reference audio. Usable "
                 "on CPU but slow — budget ~4s of compute per second of speech.",
     },
-    "vibevoice-1.5b": {
-        "label": "VibeVoice 1.5B (Microsoft)",
-        "repo": "microsoft/VibeVoice-1.5B",
-        "kind": "tts",
-        "clone": True,
-        "needs_ram_gb": 8.0,
-        "needs_gpu": True,
-        "cpu_rtf": 30.0,
-        "licence": "MIT",
-        "install": "pip",
-        "package": "vibevoice",
-        "note": "Long-form multi-speaker, up to 90 min and 4 voices with real "
-                "turn-taking. Needs a GPU to be practical.",
-    },
+
     "breeze-tts-2": {
         "label": "Breeze TTS 2",
         "repo": "BreezeBlue/Breeze-TTS-2",
@@ -334,6 +321,8 @@ def active_model():
 
 
 # ── synthesis ───────────────────────────────────────────────────────────────
+
+
 
 def synthesize(text, out_path, reference_wav=None, speed=1.0):
     """Generate speech with the active backend. Returns (ok, message)."""

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background: dark charcoal with gold accent -->
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d0d10;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16151a;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="gradOrb" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#f0b429;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#2ee6b8;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#0d0d10;stop-opacity:0.5" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="256" height="256" fill="url(#grad1)" rx="48"/>
+
+  <!-- Outer ring (gold) -->
+  <circle cx="128" cy="128" r="100" fill="none" stroke="#f0b429" stroke-width="3" opacity="0.6"/>
+
+  <!-- Voice orb (main) -->
+  <circle cx="128" cy="128" r="70" fill="url(#gradOrb)" filter="drop-shadow(0 0 20px rgba(240,180,41,0.4))"/>
+
+  <!-- Inner core (jade) -->
+  <circle cx="128" cy="128" r="50" fill="#2ee6b8" opacity="0.3"/>
+
+  <!-- Sound waves (indicates voice/audio) -->
+  <circle cx="128" cy="128" r="85" fill="none" stroke="#2ee6b8" stroke-width="2" opacity="0.4" stroke-dasharray="5,5"/>
+  <circle cx="128" cy="128" r="110" fill="none" stroke="#f0b429" stroke-width="1.5" opacity="0.2" stroke-dasharray="8,8"/>
+
+  <!-- Highlight (glossy effect) -->
+  <ellipse cx="105" cy="105" rx="25" ry="25" fill="#fff" opacity="0.15"/>
+
+  <!-- Badge: "CONNIE" text below orb -->
+  <text x="128" y="190" font-family="'Inter', sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#eef2f3" letter-spacing="1">CONNIE</text>
+</svg>

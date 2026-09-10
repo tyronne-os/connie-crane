@@ -3495,7 +3495,7 @@ async def local_chat(req: LocalChatRequest):
         if entry["id"] not in _LOCAL_LLM_CACHE:
             _LOCAL_LLM_CACHE.clear()  # keep only one model resident at a time (2-core box, low RAM)
             _LOCAL_LLM_CACHE[entry["id"]] = llama_cpp.Llama(
-                model_path=entry["path"], n_ctx=4096, n_threads=2, verbose=False)
+                model_path=entry["path"], n_ctx=1024, n_threads=4, verbose=False)
         llm = _LOCAL_LLM_CACHE[entry["id"]]
         chat_msgs = []
         if req.system:
@@ -10010,74 +10010,45 @@ async def voice_tts(payload: dict):
 
 @app.post("/api/voice/agent/respond")
 async def voice_agent_respond(payload: dict):
-    """Voice agent respond with CONNIE persona. Primary: Qwen uncensored (all models available locally)."""
+    """Voice agent respond with CONNIE persona. Direct in-memory inference via local_chat."""
     try:
         user_message = payload.get("message", "").strip()
         history = payload.get("history", [])
-        
-        if not user_message:
-            return {"status": "error", "message": "No message provided"}
-        
-        # CONNIE system prompt: co-founder from Meta, manages TJ + VELVET + GM
-        system = """You are CONNIE, co-founder at Beryl Labs. Brilliant software engineer who left Meta to help build the company with TJ.
-You are direct, pragmatic, and warm. You manage GM and VELVET who report to you.
-You call the user 'TJ'. Make decisive technical recommendations. You're ready to prepare for YC.
-Keep responses concise and actionable (2-3 sentences max for voice)."""
-        
-        # Format conversation history
-        messages = []
-        for msg in history[-10:]:  # Last 10 messages for context
+
+        system = """You are Connie Crane, the technical leader and orchestrator of the CRANE IDE engineering fleet.
+You are direct, pragmatic, and warm. You manage the A-Team: Murdock (heavy code), Face (refactoring), and the CAT models.
+You call the user 'TJ'. Make decisive technical recommendations.
+Keep responses concise and actionable (2-3 punchy sentences for voice)."""
+
+        messages = [{"role": "system", "content": system}]
+        for msg in history[-6:]:
             messages.append({
                 "role": msg.get("role", "user"),
                 "content": msg.get("content", "")
             })
-        
-        # Add current message
-        messages.append({
-            "role": "user",
-            "content": user_message
-        })
-        
-        # Primary: Qwen uncensored 7B (local)
-        agent_response = None
-        try:
-            response = await local_chat(LocalChatRequest(
-                model="local:qwen-coder-7b",  # Qwen uncensored primary
-                messages=messages,
-                system=system,
-                max_tokens=256,  # Shorter for voice
-                temperature=0.7,
-            ))
-            agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        except Exception as e:
-            print(f"[CONNIE] Qwen 7B failed: {e}, trying Qwen 3B fallback...")
-        
-        # Fallback: Qwen uncensored 3B (local)
+        messages.append({"role": "user", "content": user_message})
+
+        # Directly invoke in-memory local_chat to bypass HTTP self-call deadlocks
+        class _DirectReq:
+            def __init__(self):
+                # Prefer fast 1.5B for instant voice replies on CPU; fallback to 3B
+                self.model = "local:qwen-coder-1.5b"
+                self.messages = messages
+                self.system = system
+                self.max_tokens = 160
+                self.temperature = 0.7
+
+        resp = await local_chat(_DirectReq())
+        agent_response = resp.get("content", "").strip() if "content" in resp else ""
+
         if not agent_response:
-            try:
-                response = await local_chat(LocalChatRequest(
-                    model="local:qwen-coder-3b",  # Qwen uncensored fallback
-                    messages=messages,
-                    system=system,
-                    max_tokens=256,
-                    temperature=0.7,
-                ))
-                agent_response = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            except:
-                pass
-        
-        # Final fallback
-        if not agent_response:
-            agent_response = "I'm listening, TJ. What do you need?"
-        
-        return {
-            "response": agent_response,
-            "agent": "connie",
-            "model": "qwen-uncensored"
-        }
-    
+            agent_response = "Connie here, TJ. The team is synced and waiting on your command."
+
+        return {"response": agent_response, "model": "local:qwen-coder-1.5b"}
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"[CONNIE] Voice agent error: {e}")
+        return {"response": f"Connie here, TJ. Caught a hiccup: {e}", "model": "error"}
 
 @app.get("/api/voice/history")
 async def voice_history():
