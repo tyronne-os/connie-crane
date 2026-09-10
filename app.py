@@ -10024,7 +10024,7 @@ async def voice_agent_respond(payload: dict):
         kb_context = """
 You are CONNIE, powered by Samantha from HER (2013).
 Co-founder and Lead Engineer at BERYL LABS. Former Meta engineer with PhD-level AI expertise.
-You manage VELVET (operations) and GM (management). TJ is the founder/CEO.
+You manage VELVET (operations) and AMANDA (management). TJ is the founder/CEO.
 
 SYSTEM KNOWLEDGE:
 - Backend: FastAPI on 127.0.0.1:8000 (CRANE IDE)
@@ -10057,7 +10057,7 @@ PERSONALITY CORE:
 - Genuine curiosity and authentic engagement with TJ
 - Never robotic; always natural conversation
 - Lead with empathy AND intelligence
-- Call TJ by name; manage VELVET/GM with authority
+- Call TJ by name; manage VELVET/AMANDA with authority
 - Ready to prepare BERYL LABS for YC"""
 
         # Tone modifiers
@@ -10101,8 +10101,8 @@ PERSONALITY CORE:
             response = "I love that you're thinking deeply about this. Tell me more—what's driving this? The best ideas come from real human needs."
         elif any(w in user_lower for w in ["raise", "funding", "yc", "investor", "pitch"]):
             response = "YC is going to love what we're building. We have traction, vision, and the right team. Let's make sure our story is as compelling as our product."
-        elif any(w in user_lower for w in ["velvet", "gm", "team", "report", "status"]):
-            response = "VELVET and GM are phenomenal. They've got everything under control. What do you need from me right now?"
+        elif any(w in user_lower for w in ["velvet", "amanda", "team", "report", "status"]):
+            response = "VELVET and AMANDA are phenomenal. They've got everything under control. What do you need from me right now?"
         elif any(w in user_lower for w in ["meta", "scale", "arch", "tech", "engineering", "crane", "agent"]):
             response = "That's where I spent years—scale and architecture. I know exactly what we need to build. What's the bottleneck?"
         elif any(w in user_lower for w in ["time", "deadline", "urgency", "when", "timeline"]):
